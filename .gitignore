@@ -1,0 +1,6 @@
+/.idea
+*.db
+*.exe
+.env
+
+.claude

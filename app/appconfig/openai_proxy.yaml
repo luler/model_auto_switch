@@ -1,0 +1,37 @@
+# OpenAI 代理配置
+
+# 对外提供的 API Keys（客户端使用这些 key 访问本服务）
+api_keys:
+  - "sk-your-custom-api-key"
+  # - "sk-another-key"
+
+# 请求重试配置
+max_retries: 3           # 单次请求最大尝试次数（默认1不重试，设置>1启用故障转移）
+
+# 供应商管理器配置
+max_failures: 3          # 连续失败多少次后标记供应商为不健康
+recovery_interval: 30    # 恢复检查间隔（秒）
+health_check_period: 60  # 健康检查周期（秒）
+
+# 上游供应商配置列表
+providers:
+  # 供应商1: OpenAI 官方
+  - name: "openai"
+    base_url: "https://api.openai.com"
+    api_key: "sk-xxxx"
+    weight: 1            # 供应商权重（用于负载均衡）
+    priority: 1          # 供应商优先级（数字越小优先级越高）
+    timeout: 120         # 超时时间（秒）
+    # 过滤上游不支持的参数
+    exclude_params:
+      - "thinking"
+    model_mappings:
+      # 设置 alias，对外暴露 alias 名称
+      - upstream: "gpt-5"
+        alias: "gpt-5"
+        priority: 0   # 模型优先级（数字越小优先级越高 0-N）
+        weight: 1
+      - upstream: "gpt-4o"
+        alias: "gpt-5"
+        priority: 0
+        weight: 1
