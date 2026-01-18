@@ -1,6 +1,6 @@
 services:
-  model_auth_switch:
-    image: ghcr.io/luler/model_auth_switch:latest
+  model_auto_switch:
+    image: ghcr.io/luler/model_auto_switch:latest
     restart: always
     ports:
       - 20261:3000
