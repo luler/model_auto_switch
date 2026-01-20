@@ -190,7 +190,7 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 
 		if err != nil {
 			lastErr = err
-			c.manager.RecordFailure(pm.Provider)
+			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			logrus.Warnf("Provider %s failed: %v", providerName, err)
 			continue
 		}
@@ -200,7 +200,7 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 
 		if err != nil {
 			lastErr = err
-			c.manager.RecordFailure(pm.Provider)
+			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			logrus.Warnf("Provider %s read response failed: %v", providerName, err)
 			continue
 		}
@@ -208,14 +208,14 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		// 检查HTTP状态码
 		if resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, upstream.ParseErrorResponse(respBody))
-			c.manager.RecordFailure(pm.Provider)
+			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			logrus.Warnf("Provider %s returned error status %d", providerName, resp.StatusCode)
 			continue
 		}
 
 		// 成功响应 - 替换响应中的模型名为别名
 		respBody = replaceModelInResponse(respBody, pm.Mapping.Upstream, aliasModel)
-		c.manager.RecordSuccess(pm.Provider)
+		c.manager.RecordSuccess(pm.Provider, pm.Mapping.Upstream)
 		ctx.Data(resp.StatusCode, "application/json", respBody)
 		return
 	}
@@ -248,7 +248,7 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		resp, err := pm.Provider.ProxyStreamRequest(ctx.Request.Context(), "/v1/chat/completions", reqBody, headers)
 		if err != nil {
 			lastErr = err
-			c.manager.RecordFailure(pm.Provider)
+			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			logrus.Warnf("Provider %s stream failed: %v", providerName, err)
 			continue
 		}
@@ -258,7 +258,7 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, upstream.ParseErrorResponse(respBody))
-			c.manager.RecordFailure(pm.Provider)
+			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			logrus.Warnf("Provider %s stream returned error status %d", providerName, resp.StatusCode)
 			continue
 		}
@@ -267,12 +267,12 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			ctx.Data(resp.StatusCode, "application/json", respBody)
-			c.manager.RecordSuccess(pm.Provider)
+			c.manager.RecordSuccess(pm.Provider, pm.Mapping.Upstream)
 			return
 		}
 
 		// 成功，开始流式传输
-		c.manager.RecordSuccess(pm.Provider)
+		c.manager.RecordSuccess(pm.Provider, pm.Mapping.Upstream)
 		c.streamResponse(ctx, resp, pm.Mapping.Upstream, aliasModel)
 		return
 	}

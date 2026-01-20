@@ -17,10 +17,11 @@ import (
 
 // ModelMapping 模型映射配置
 type ModelMapping struct {
-	Alias    string `json:"alias" mapstructure:"alias"`       // 对外暴露的别名（可选，不填则等于 upstream）
-	Upstream string `json:"upstream" mapstructure:"upstream"` // 上游实际模型名（必填）
-	Priority int    `json:"priority" mapstructure:"priority"` // 优先级（数值越小优先级越高，默认0）
-	Weight   int    `json:"weight" mapstructure:"weight"`     // 负载均衡权重（默认1）
+	Alias       string `json:"alias" mapstructure:"alias"`               // 对外暴露的别名（可选，不填则等于 upstream）
+	Upstream    string `json:"upstream" mapstructure:"upstream"`         // 上游实际模型名（必填）
+	Priority    int    `json:"priority" mapstructure:"priority"`         // 优先级（数值越小优先级越高，默认0）
+	Weight      int    `json:"weight" mapstructure:"weight"`             // 负载均衡权重（默认1）
+	MaxFailures *int   `json:"max_failures" mapstructure:"max_failures"` // 该模型的连续失败阈值（可选，不填则使用全局配置）
 }
 
 // ProviderConfig 上游供应商配置
@@ -41,27 +42,43 @@ type ProviderModel struct {
 	Mapping  ModelMapping
 }
 
+// ModelHealth 模型健康状态
+type ModelHealth struct {
+	Healthy      atomic.Bool  // 是否健康
+	FailureCount atomic.Int32 // 连续失败次数
+	LastFailure  atomic.Int64 // 上次失败时间戳
+	maxFailures  int          // 该模型的连续失败阈值
+}
+
 // Provider 上游供应商
 type Provider struct {
-	Config         ProviderConfig
-	healthy        atomic.Bool         // 是否健康
-	failureCount   atomic.Int32        // 连续失败次数
-	lastFailure    atomic.Int64        // 上次失败时间戳
-	totalReqs      atomic.Int64        // 总请求数
-	successReqs    atomic.Int64        // 成功请求数
-	mu             sync.RWMutex        // 保护其他字段
-	httpClient     *http.Client        // HTTP 客户端
-	modelIndex     map[string][]int    // alias -> ModelMappings 索引
+	Config       ProviderConfig
+	totalReqs    atomic.Int64           // 总请求数
+	successReqs  atomic.Int64           // 成功请求数
+	mu           sync.RWMutex           // 保护其他字段
+	httpClient   *http.Client           // HTTP 客户端
+	modelIndex   map[string][]int       // alias -> ModelMappings 索引
+	modelHealths map[string]ModelHealth // upstream -> ModelHealth
+}
+
+// ProviderModelHealth 供应商模型健康信息
+type ProviderModelHealth struct {
+	ProviderName  string `json:"provider_name"`
+	ModelAlias    string `json:"model_alias"`    // 模型别名
+	UpstreamModel string `json:"upstream_model"` // 上游模型名
+	Healthy       bool   `json:"healthy"`
+	FailureCount  int32  `json:"failure_count"`
 }
 
 // ProviderStats 供应商统计信息
 type ProviderStats struct {
-	Name         string  `json:"name"`
-	Healthy      bool    `json:"healthy"`
-	FailureCount int32   `json:"failure_count"`
-	TotalReqs    int64   `json:"total_requests"`
-	SuccessReqs  int64   `json:"success_requests"`
-	SuccessRate  float64 `json:"success_rate"`
+	Name         string                `json:"name"`
+	Healthy      bool                  `json:"healthy"`
+	FailureCount int32                 `json:"failure_count"`
+	TotalReqs    int64                 `json:"total_requests"`
+	SuccessReqs  int64                 `json:"success_requests"`
+	SuccessRate  float64               `json:"success_rate"`
+	ModelHealths []ProviderModelHealth `json:"model_healths"`
 }
 
 // Manager 供应商管理器
@@ -134,15 +151,26 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 					IdleConnTimeout:     90 * time.Second,
 				},
 			},
-			modelIndex: make(map[string][]int),
+			modelIndex:   make(map[string][]int),
+			modelHealths: make(map[string]ModelHealth),
 		}
 
-		// 构建模型索引
+		// 构建模型索引和初始化模型健康状态
 		for i, mm := range cfg.ModelMappings {
 			p.modelIndex[mm.Alias] = append(p.modelIndex[mm.Alias], i)
+
+			// 初始化该upstream的健康状态（基于upstream而不是alias）
+			maxFailures := m.maxFailures // 默认使用全局配置
+			if mm.MaxFailures != nil && *mm.MaxFailures > 0 {
+				maxFailures = *mm.MaxFailures // 如果配置了专门用于该模型的值，则覆盖
+			}
+			health := ModelHealth{
+				maxFailures: maxFailures,
+			}
+			health.Healthy.Store(true)
+			p.modelHealths[mm.Upstream] = health
 		}
 
-		p.healthy.Store(true)
 		m.providers = append(m.providers, p)
 	}
 
@@ -177,22 +205,29 @@ func (m *Manager) GetProviderModels(alias string) []ProviderModel {
 
 	var candidates []ProviderModel
 
-	// 收集所有支持该别名的 ProviderModel
+	// 收集所有支持该别名的 ProviderModel（按模型健康状态过滤）
 	for _, p := range m.providers {
-		if !p.healthy.Load() {
-			continue
-		}
 		if indices, ok := p.modelIndex[alias]; ok {
 			for _, idx := range indices {
-				candidates = append(candidates, ProviderModel{
-					Provider: p,
-					Mapping:  p.Config.ModelMappings[idx],
-				})
+				mm := p.Config.ModelMappings[idx]
+				// 检查该upstream是否健康（使用上游模型名作为key）
+				if health, exists := p.modelHealths[mm.Upstream]; exists {
+					p.mu.RLock()
+					healthy := health.Healthy.Load()
+					p.mu.RUnlock()
+					if !healthy {
+						continue // 跳过不健康的upstream
+					}
+					candidates = append(candidates, ProviderModel{
+						Provider: p,
+						Mapping:  mm,
+					})
+				}
 			}
 		}
 	}
 
-	// 如果没有健康的，使用所有的
+	// 如果没有健康的，使用所有的（作为最后手段）
 	if len(candidates) == 0 {
 		for _, p := range m.providers {
 			if indices, ok := p.modelIndex[alias]; ok {
@@ -318,25 +353,35 @@ func (m *Manager) supportsModel(p *Provider, model string) bool {
 }
 
 // RecordSuccess 记录成功请求
-func (m *Manager) RecordSuccess(p *Provider) {
+func (m *Manager) RecordSuccess(p *Provider, upstreamModel string) {
 	p.totalReqs.Add(1)
 	p.successReqs.Add(1)
-	p.failureCount.Store(0)
-	if !p.healthy.Load() {
-		p.healthy.Store(true)
-		logrus.Infof("Provider %s recovered and marked as healthy", p.Config.Name)
+
+	// 重置该upstream的失败计数（使用上游模型名作为key）
+	if health, exists := p.modelHealths[upstreamModel]; exists {
+		health.FailureCount.Store(0)
+		if !health.Healthy.Load() {
+			health.Healthy.Store(true)
+			logrus.Infof("Provider %s upstream model %s recovered and marked as healthy", p.Config.Name, upstreamModel)
+		}
+		p.modelHealths[upstreamModel] = health
 	}
 }
 
 // RecordFailure 记录失败请求
-func (m *Manager) RecordFailure(p *Provider) {
+func (m *Manager) RecordFailure(p *Provider, upstreamModel string) {
 	p.totalReqs.Add(1)
-	failures := p.failureCount.Add(1)
-	p.lastFailure.Store(time.Now().Unix())
 
-	if int(failures) >= m.maxFailures && p.healthy.Load() {
-		p.healthy.Store(false)
-		logrus.Warnf("Provider %s marked as unhealthy after %d consecutive failures", p.Config.Name, failures)
+	// 记录该upstream的失败（使用上游模型名作为key）
+	if health, exists := p.modelHealths[upstreamModel]; exists {
+		failures := health.FailureCount.Add(1)
+		health.LastFailure.Store(time.Now().Unix())
+
+		if int(failures) >= health.maxFailures && health.Healthy.Load() {
+			health.Healthy.Store(false)
+			logrus.Warnf("Provider %s upstream model %s marked as unhealthy after %d consecutive failures", p.Config.Name, upstreamModel, failures)
+		}
+		p.modelHealths[upstreamModel] = health
 	}
 }
 
@@ -355,7 +400,7 @@ func (m *Manager) startHealthCheck() {
 	}
 }
 
-// checkAndRecover 检查并恢复不健康的供应商
+// checkAndRecover 检查并恢复不健康的upstream模型
 func (m *Manager) checkAndRecover() {
 	m.mu.RLock()
 	providers := m.providers
@@ -363,40 +408,80 @@ func (m *Manager) checkAndRecover() {
 
 	now := time.Now().Unix()
 	for _, p := range providers {
-		if !p.healthy.Load() {
-			lastFailure := p.lastFailure.Load()
-			if now-lastFailure > int64(m.recoveryInterval.Seconds()) {
-				// 尝试恢复
-				go m.tryRecover(p)
+		p.mu.RLock()
+		healths := p.modelHealths
+		p.mu.RUnlock()
+
+		for upstream, health := range healths {
+			if !health.Healthy.Load() {
+				lastFailure := health.LastFailure.Load()
+				if now-lastFailure > int64(m.recoveryInterval.Seconds()) {
+					// 尝试恢复该upstream
+					go m.tryRecoverModel(p, upstream)
+				}
 			}
 		}
 	}
 }
 
-// tryRecover 尝试恢复供应商
-func (m *Manager) tryRecover(p *Provider) {
+// tryRecoverModel 尝试恢复upstream模型
+func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
+	// 第一步：先检查 /v1/models 接口
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// 发送简单的健康检查请求
 	req, err := http.NewRequestWithContext(ctx, "GET", p.Config.BaseURL+"/v1/models", nil)
 	if err != nil {
-		logrus.Warnf("Failed to create health check request for %s: %v", p.Config.Name, err)
+		logrus.Warnf("Failed to create health check request for %s upstream %s: %v", p.Config.Name, upstreamModel, err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+p.Config.APIKey)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		logrus.Warnf("Health check failed for %s: %v", p.Config.Name, err)
+		logrus.Warnf("Health check failed for %s upstream %s: %v", p.Config.Name, upstreamModel, err)
 		return
 	}
-	defer resp.Body.Close()
+	resp.Body.Close()
 
-	if resp.StatusCode == http.StatusOK {
-		p.failureCount.Store(0)
-		p.healthy.Store(true)
-		logrus.Infof("Provider %s recovered after health check", p.Config.Name)
+	if resp.StatusCode != http.StatusOK {
+		logrus.Debugf("Health check /v1/models returned %d for %s upstream %s", resp.StatusCode, p.Config.Name, upstreamModel)
+		return
+	}
+
+	// 第二步：使用简单的 chat/completions 调用来验证模型可用性
+	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`, upstreamModel))
+	testReq, err := http.NewRequestWithContext(context.Background(), "POST", p.Config.BaseURL+"/v1/chat/completions", bytes.NewReader(testReqBody))
+	if err != nil {
+		logrus.Warnf("Failed to create completions test request for %s upstream %s: %v", p.Config.Name, upstreamModel, err)
+		return
+	}
+
+	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	testReq = testReq.WithContext(testCtx)
+	testReq.Header.Set("Authorization", "Bearer "+p.Config.APIKey)
+	testReq.Header.Set("Content-Type", "application/json")
+
+	testResp, err := p.httpClient.Do(testReq)
+	testCancel()
+	if err != nil {
+		logrus.Debugf("Completions test failed for %s upstream %s: %v", p.Config.Name, upstreamModel, err)
+		return
+	}
+	defer testResp.Body.Close()
+
+	// 检查completions响应：200表示成功，或者400/401表示模型可能不兼容但服务可用
+	if testResp.StatusCode == http.StatusOK || testResp.StatusCode == http.StatusBadRequest {
+		p.mu.Lock()
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.FailureCount.Store(0)
+			health.Healthy.Store(true)
+			p.modelHealths[upstreamModel] = health
+		}
+		p.mu.Unlock()
+		logrus.Infof("Provider %s upstream %s recovered after health check (completions status: %d)", p.Config.Name, upstreamModel, testResp.StatusCode)
+	} else {
+		logrus.Debugf("Completions test returned %d for %s upstream %s", testResp.StatusCode, p.Config.Name, upstreamModel)
 	}
 }
 
@@ -418,13 +503,43 @@ func (m *Manager) GetStats() []ProviderStats {
 		if total > 0 {
 			rate = float64(success) / float64(total) * 100
 		}
+
+		// 收集模型健康状态
+		p.mu.RLock()
+		modelHealths := make([]ProviderModelHealth, 0, len(p.modelHealths))
+		totalModelFailures := int32(0)
+		allModelsHealthy := true
+
+		for alias, health := range p.modelHealths {
+			fc := health.FailureCount.Load()
+			totalModelFailures += fc
+			if !health.Healthy.Load() {
+				allModelsHealthy = false
+			}
+			// 获取上游模型名
+			for _, mm := range p.Config.ModelMappings {
+				if mm.Alias == alias {
+					modelHealths = append(modelHealths, ProviderModelHealth{
+						ProviderName:  p.Config.Name,
+						ModelAlias:    alias,
+						UpstreamModel: mm.Upstream,
+						Healthy:       health.Healthy.Load(),
+						FailureCount:  fc,
+					})
+					break
+				}
+			}
+		}
+		p.mu.RUnlock()
+
 		stats = append(stats, ProviderStats{
 			Name:         p.Config.Name,
-			Healthy:      p.healthy.Load(),
-			FailureCount: p.failureCount.Load(),
+			Healthy:      allModelsHealthy,
+			FailureCount: totalModelFailures,
 			TotalReqs:    total,
 			SuccessReqs:  success,
 			SuccessRate:  rate,
+			ModelHealths: modelHealths,
 		})
 	}
 	return stats
