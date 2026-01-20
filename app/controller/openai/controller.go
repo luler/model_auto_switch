@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gin_base/app/helper/log_helper"
 	"gin_base/app/model"
 	"gin_base/app/service/upstream"
 	"io"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/sirupsen/logrus"
 )
 
 // Controller OpenAI 兼容接口控制器
@@ -133,14 +133,14 @@ func processRequestBody(body []byte, pm upstream.ProviderModel, aliasModel strin
 	// 替换模型名
 	if upstreamModel != aliasModel {
 		data["model"] = upstreamModel
-		logrus.Debugf("Model alias: %s -> upstream: %s", aliasModel, upstreamModel)
+		log_helper.Debug(fmt.Sprintf("Model alias: %s -> upstream: %s", aliasModel, upstreamModel))
 	}
 
 	// 过滤不支持的参数
 	for _, param := range excludeParams {
 		if _, exists := data[param]; exists {
 			delete(data, param)
-			logrus.Debugf("Excluded param: %s", param)
+			log_helper.Debug(fmt.Sprintf("Excluded param: %s", param))
 		}
 	}
 
@@ -178,7 +178,7 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		pm := providerModels[i]
 		providerName := fmt.Sprintf("%s(%s)", pm.Provider.Config.Name, pm.Mapping.Upstream)
 		triedProviders = append(triedProviders, providerName)
-		logrus.Debugf("Trying provider: %s (attempt %d/%d)", providerName, i+1, maxAttempts)
+		log_helper.Debug(fmt.Sprintf("Trying provider: %s (attempt %d/%d)", providerName, i+1, maxAttempts))
 
 		// 处理请求体：替换模型名 + 过滤参数
 		reqBody := processRequestBody(body, pm, aliasModel)
@@ -186,22 +186,23 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		// 创建带超时的上下文
 		reqCtx, cancel := context.WithTimeout(ctx.Request.Context(), time.Duration(pm.Provider.Config.Timeout)*time.Second)
 		resp, err := pm.Provider.ProxyRequest(reqCtx, "POST", "/v1/chat/completions", reqBody, headers)
-		cancel()
 
 		if err != nil {
+			cancel()
 			lastErr = err
 			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
-			logrus.Warnf("Provider %s failed: %v", providerName, err)
+			log_helper.Warning(fmt.Sprintf("Provider %s failed: %v", providerName, err))
 			continue
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		cancel() // 读取完响应后再取消context
 
 		if err != nil {
 			lastErr = err
 			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
-			logrus.Warnf("Provider %s read response failed: %v", providerName, err)
+			log_helper.Warning(fmt.Sprintf("Provider %s read response failed: %v", providerName, err))
 			continue
 		}
 
@@ -209,19 +210,20 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		if resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, upstream.ParseErrorResponse(respBody))
 			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
-			logrus.Warnf("Provider %s returned error status %d", providerName, resp.StatusCode)
+			log_helper.Warning(fmt.Sprintf("Provider %s returned error status %d", providerName, resp.StatusCode))
 			continue
 		}
 
 		// 成功响应 - 替换响应中的模型名为别名
 		respBody = replaceModelInResponse(respBody, pm.Mapping.Upstream, aliasModel)
 		c.manager.RecordSuccess(pm.Provider, pm.Mapping.Upstream)
+		log_helper.Info(fmt.Sprintf("Request success - Provider: %s, Upstream: %s, Alias: %s, Status: %d", pm.Provider.Config.Name, pm.Mapping.Upstream, aliasModel, resp.StatusCode))
 		ctx.Data(resp.StatusCode, "application/json", respBody)
 		return
 	}
 
 	// 所有供应商都失败
-	logrus.Errorf("All providers failed. Tried: %v, last error: %v", triedProviders, lastErr)
+	log_helper.Error(fmt.Sprintf("All providers failed. Tried: %v, last error: %v", triedProviders, lastErr))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
 }
 
@@ -240,7 +242,7 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		pm := providerModels[i]
 		providerName := fmt.Sprintf("%s(%s)", pm.Provider.Config.Name, pm.Mapping.Upstream)
 		triedProviders = append(triedProviders, providerName)
-		logrus.Debugf("Trying provider for stream: %s (attempt %d/%d)", providerName, i+1, maxAttempts)
+		log_helper.Debug(fmt.Sprintf("Trying provider for stream: %s (attempt %d/%d)", providerName, i+1, maxAttempts))
 
 		// 处理请求体：替换模型名 + 过滤参数
 		reqBody := processRequestBody(body, pm, aliasModel)
@@ -249,7 +251,7 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		if err != nil {
 			lastErr = err
 			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
-			logrus.Warnf("Provider %s stream failed: %v", providerName, err)
+			log_helper.Warning(fmt.Sprintf("Provider %s stream failed: %v", providerName, err))
 			continue
 		}
 
@@ -259,26 +261,28 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d: %s", resp.StatusCode, upstream.ParseErrorResponse(respBody))
 			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
-			logrus.Warnf("Provider %s stream returned error status %d", providerName, resp.StatusCode)
+			log_helper.Warning(fmt.Sprintf("Provider %s stream returned error status %d", providerName, resp.StatusCode))
 			continue
 		}
 
 		if resp.StatusCode >= 400 {
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			log_helper.Info(fmt.Sprintf("Stream request with client error status - Provider: %s, Upstream: %s, Alias: %s, Status: %d", pm.Provider.Config.Name, pm.Mapping.Upstream, aliasModel, resp.StatusCode))
 			ctx.Data(resp.StatusCode, "application/json", respBody)
-			c.manager.RecordSuccess(pm.Provider, pm.Mapping.Upstream)
+			// 4xx 错误不记录为成功或失败（客户端错误，不是上游服务问题）
 			return
 		}
 
 		// 成功，开始流式传输
 		c.manager.RecordSuccess(pm.Provider, pm.Mapping.Upstream)
+		log_helper.Info(fmt.Sprintf("Stream request started - Provider: %s, Upstream: %s, Alias: %s", pm.Provider.Config.Name, pm.Mapping.Upstream, aliasModel))
 		c.streamResponse(ctx, resp, pm.Mapping.Upstream, aliasModel)
 		return
 	}
 
 	// 所有供应商都失败
-	logrus.Errorf("All providers failed for stream. Tried: %v, last error: %v", triedProviders, lastErr)
+	log_helper.Error(fmt.Sprintf("All providers failed for stream. Tried: %v, last error: %v", triedProviders, lastErr))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
 }
 
@@ -302,17 +306,17 @@ func replaceModelInStreamLine(line []byte, upstreamModel, aliasModel string) []b
 func (c *Controller) streamResponse(ctx *gin.Context, resp *http.Response, upstreamModel, aliasModel string) {
 	defer resp.Body.Close()
 
+	flusher, ok := ctx.Writer.(http.Flusher)
+	if !ok {
+		log_helper.Error("Streaming not supported")
+		c.sendError(ctx, http.StatusInternalServerError, "server_error", "streaming not supported")
+		return
+	}
+
 	ctx.Header("Content-Type", "text/event-stream")
 	ctx.Header("Cache-Control", "no-cache")
 	ctx.Header("Connection", "keep-alive")
 	ctx.Header("Transfer-Encoding", "chunked")
-
-	flusher, ok := ctx.Writer.(http.Flusher)
-	if !ok {
-		logrus.Error("Streaming not supported")
-		c.sendError(ctx, http.StatusInternalServerError, "server_error", "streaming not supported")
-		return
-	}
 
 	reader := bufio.NewReader(resp.Body)
 	for {
@@ -321,7 +325,7 @@ func (c *Controller) streamResponse(ctx *gin.Context, resp *http.Response, upstr
 			if err == io.EOF {
 				break
 			}
-			logrus.Warnf("Stream read error: %v", err)
+			log_helper.Warning(fmt.Sprintf("Stream read error: %v", err))
 			break
 		}
 
@@ -331,7 +335,7 @@ func (c *Controller) streamResponse(ctx *gin.Context, resp *http.Response, upstr
 		// 写入响应
 		_, writeErr := ctx.Writer.Write(line)
 		if writeErr != nil {
-			logrus.Warnf("Stream write error: %v", writeErr)
+			log_helper.Warning(fmt.Sprintf("Stream write error: %v", writeErr))
 			break
 		}
 		flusher.Flush()

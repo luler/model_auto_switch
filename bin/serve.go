@@ -1,12 +1,16 @@
 package bin
 
 import (
+	"context"
 	"gin_base/app/appconfig"
 	"gin_base/app/middleware"
 	"gin_base/app/service/upstream"
 	"gin_base/route"
+	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -47,7 +51,7 @@ func StartServer() {
 	route.InitRouter(engine)
 
 	// 初始化 OpenAI 代理
-	initOpenAIProxy(engine)
+	manager := initOpenAIProxy(engine)
 
 	// 自定义端口
 	port := os.Getenv("PORT")
@@ -56,16 +60,49 @@ func StartServer() {
 	}
 	port = ":" + port
 
-	logrus.Infof("Server starting on port %s", port)
-	engine.Run(port)
+	// 创建 HTTP 服务器
+	srv := &http.Server{
+		Addr:    port,
+		Handler: engine,
+	}
+
+	// 启动服务器（非阻塞）
+	go func() {
+		logrus.Infof("Server starting on port %s", port)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logrus.Fatalf("Server failed to start: %v", err)
+		}
+	}()
+
+	// 等待中断信号
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	logrus.Info("Shutting down server...")
+
+	// 停止 Manager 的健康检查
+	if manager != nil {
+		manager.Stop()
+		logrus.Info("Manager stopped")
+	}
+
+	// 优雅关闭 HTTP 服务器
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		logrus.Errorf("Server forced to shutdown: %v", err)
+	}
+
+	logrus.Info("Server exited")
 }
 
 // initOpenAIProxy 初始化 OpenAI 代理服务
-func initOpenAIProxy(engine *gin.Engine) {
+func initOpenAIProxy(engine *gin.Engine) *upstream.Manager {
 	config := loadOpenAIProxyConfig()
 	if config == nil || len(config.Providers) == 0 {
 		logrus.Warn("OpenAI proxy not configured, skipping")
-		return
+		return nil
 	}
 
 	// 创建管理器配置
@@ -101,6 +138,8 @@ func initOpenAIProxy(engine *gin.Engine) {
 			logrus.Infof("      %s -> %s (priority: %d, weight: %d)", alias, mm.Upstream, mm.Priority, mm.Weight)
 		}
 	}
+
+	return manager
 }
 
 // loadOpenAIProxyConfig 加载 OpenAI 代理配置

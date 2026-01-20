@@ -1,4 +1,4 @@
-package log_helper
+package common_log_helper
 
 import (
 	"bytes"
@@ -7,11 +7,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"gin_base/app/helper/cache_helper"
-	"github.com/syyongx/php2go"
 	"io"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/syyongx/php2go"
 )
 
 // 推送日志数据到队列

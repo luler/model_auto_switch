@@ -3,15 +3,16 @@ package middleware
 import (
 	"encoding/json"
 	"fmt"
+	"gin_base/app/helper/common_log_helper"
 	"gin_base/app/helper/helper"
-	"gin_base/app/helper/log_helper"
 	"gin_base/app/helper/request_helper"
-	"github.com/gin-gonic/gin"
-	"github.com/segmentio/ksuid"
-	"github.com/syyongx/php2go"
 	"os"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/segmentio/ksuid"
+	"github.com/syyongx/php2go"
 )
 
 // 限制速度
@@ -93,8 +94,8 @@ func CommonLog() gin.HandlerFunc {
 				"server_ip":   serverIP,
 			})
 
-			log_helper.QueueCommonLog(logData)
-			log_helper.PushCommonLog()
+			common_log_helper.QueueCommonLog(logData)
+			common_log_helper.PushCommonLog()
 		}()
 	}
 }

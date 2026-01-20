@@ -11,7 +11,7 @@ var logHelper *logrus.Logger
 func InitlogHelper() {
 	logHelper = logrus.New()
 	// 设置日志级别为 Info
-	logHelper.SetLevel(logrus.InfoLevel)
+	logHelper.SetLevel(logrus.TraceLevel)
 	//设置日志格式
 	logHelper.SetFormatter(&logrus.TextFormatter{
 		TimestampFormat: "2006-01-02 15:04:05.000",

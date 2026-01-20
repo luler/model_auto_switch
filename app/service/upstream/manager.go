@@ -5,14 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"gin_base/app/helper/log_helper"
 	"io"
 	"math/rand"
 	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/sirupsen/logrus"
 )
 
 // ModelMapping 模型映射配置
@@ -44,21 +43,23 @@ type ProviderModel struct {
 
 // ModelHealth 模型健康状态
 type ModelHealth struct {
-	Healthy      atomic.Bool  // 是否健康
-	FailureCount atomic.Int32 // 连续失败次数
-	LastFailure  atomic.Int64 // 上次失败时间戳
-	maxFailures  int          // 该模型的连续失败阈值
+	Healthy       atomic.Bool  // 是否健康
+	FailureCount  atomic.Int32 // 连续失败次数
+	LastFailure   atomic.Int64 // 上次失败时间戳(秒)
+	LastCheckTime atomic.Int64 // 上次健康检查时间戳(纳秒)
+	maxFailures   int          // 该模型的连续失败阈值
+	recoverMutex  sync.Mutex   // 恢复检查互斥锁，防止并发重复检查
 }
 
 // Provider 上游供应商
 type Provider struct {
 	Config       ProviderConfig
-	totalReqs    atomic.Int64           // 总请求数
-	successReqs  atomic.Int64           // 成功请求数
-	mu           sync.RWMutex           // 保护其他字段
-	httpClient   *http.Client           // HTTP 客户端
-	modelIndex   map[string][]int       // alias -> ModelMappings 索引
-	modelHealths map[string]ModelHealth // upstream -> ModelHealth
+	totalReqs    atomic.Int64            // 总请求数
+	successReqs  atomic.Int64            // 成功请求数
+	mu           sync.RWMutex            // 保护其他字段
+	httpClient   *http.Client            // HTTP 客户端
+	modelIndex   map[string][]int        // alias -> ModelMappings 索引
+	modelHealths map[string]*ModelHealth // upstream -> ModelHealth (使用指针避免拷贝问题)
 }
 
 // ProviderModelHealth 供应商模型健康信息
@@ -152,7 +153,7 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 				},
 			},
 			modelIndex:   make(map[string][]int),
-			modelHealths: make(map[string]ModelHealth),
+			modelHealths: make(map[string]*ModelHealth),
 		}
 
 		// 构建模型索引和初始化模型健康状态
@@ -164,10 +165,12 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 			if mm.MaxFailures != nil && *mm.MaxFailures > 0 {
 				maxFailures = *mm.MaxFailures // 如果配置了专门用于该模型的值，则覆盖
 			}
-			health := ModelHealth{
+			health := &ModelHealth{
 				maxFailures: maxFailures,
 			}
 			health.Healthy.Store(true)
+			health.LastCheckTime.Store(0) // 初始化为0，确保第一次检查可以触发
+			// 确保每个ModelHealth都有独立的mutex
 			p.modelHealths[mm.Upstream] = health
 		}
 
@@ -362,9 +365,8 @@ func (m *Manager) RecordSuccess(p *Provider, upstreamModel string) {
 		health.FailureCount.Store(0)
 		if !health.Healthy.Load() {
 			health.Healthy.Store(true)
-			logrus.Infof("Provider %s upstream model %s recovered and marked as healthy", p.Config.Name, upstreamModel)
+			log_helper.Info(fmt.Sprintf("Provider %s upstream model %s recovered and marked as healthy", p.Config.Name, upstreamModel))
 		}
-		p.modelHealths[upstreamModel] = health
 	}
 }
 
@@ -379,9 +381,8 @@ func (m *Manager) RecordFailure(p *Provider, upstreamModel string) {
 
 		if int(failures) >= health.maxFailures && health.Healthy.Load() {
 			health.Healthy.Store(false)
-			logrus.Warnf("Provider %s upstream model %s marked as unhealthy after %d consecutive failures", p.Config.Name, upstreamModel, failures)
+			log_helper.Warning(fmt.Sprintf("Provider %s upstream model %s marked as unhealthy after %d consecutive failures", p.Config.Name, upstreamModel, failures))
 		}
-		p.modelHealths[upstreamModel] = health
 	}
 }
 
@@ -396,6 +397,18 @@ func (m *Manager) startHealthCheck() {
 			return
 		case <-ticker.C:
 			m.checkAndRecover()
+
+			// 检查完成后，清空 ticker channel 中可能堆积的事件
+		drainLoop:
+			for {
+				select {
+				case <-ticker.C:
+				default:
+					break drainLoop
+				}
+			}
+			// 重置定时器，确保下一次检查在完整周期后触发
+			ticker.Reset(m.healthCheckPeriod)
 		}
 	}
 }
@@ -406,7 +419,9 @@ func (m *Manager) checkAndRecover() {
 	providers := m.providers
 	m.mu.RUnlock()
 
-	now := time.Now().Unix()
+	// 使用 recoveryInterval 作为最小检查间隔
+	minCheckInterval := m.recoveryInterval.Nanoseconds()
+
 	for _, p := range providers {
 		p.mu.RLock()
 		healths := p.modelHealths
@@ -414,11 +429,19 @@ func (m *Manager) checkAndRecover() {
 
 		for upstream, health := range healths {
 			if !health.Healthy.Load() {
-				lastFailure := health.LastFailure.Load()
-				if now-lastFailure > int64(m.recoveryInterval.Seconds()) {
-					// 尝试恢复该upstream
-					go m.tryRecoverModel(p, upstream)
+				// 获取互斥锁，确保同一时间只有一个检查在执行
+				health.recoverMutex.Lock()
+				// 在锁内重新获取当前时间，确保时间检查的准确性
+				now := time.Now().UnixNano()
+				lastCheckTime := health.LastCheckTime.Load()
+				if now-lastCheckTime >= minCheckInterval {
+					// 更新检查时间
+					health.LastCheckTime.Store(now)
+					// 同步执行检查（不使用go），确保检查完成前锁不会被释放
+					m.tryRecoverModel(p, upstream)
 				}
+				// 无论是否执行检查，检查完成后释放锁
+				health.recoverMutex.Unlock()
 			}
 		}
 	}
@@ -432,56 +455,46 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", p.Config.BaseURL+"/v1/models", nil)
 	if err != nil {
-		logrus.Warnf("Failed to create health check request for %s upstream %s: %v", p.Config.Name, upstreamModel, err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+p.Config.APIKey)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		logrus.Warnf("Health check failed for %s upstream %s: %v", p.Config.Name, upstreamModel, err)
 		return
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		logrus.Debugf("Health check /v1/models returned %d for %s upstream %s", resp.StatusCode, p.Config.Name, upstreamModel)
 		return
 	}
 
 	// 第二步：使用简单的 chat/completions 调用来验证模型可用性
+	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer testCancel()
+
 	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`, upstreamModel))
-	testReq, err := http.NewRequestWithContext(context.Background(), "POST", p.Config.BaseURL+"/v1/chat/completions", bytes.NewReader(testReqBody))
+	testReq, err := http.NewRequestWithContext(testCtx, "POST", p.Config.BaseURL+"/v1/chat/completions", bytes.NewReader(testReqBody))
 	if err != nil {
-		logrus.Warnf("Failed to create completions test request for %s upstream %s: %v", p.Config.Name, upstreamModel, err)
 		return
 	}
 
-	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	testReq = testReq.WithContext(testCtx)
 	testReq.Header.Set("Authorization", "Bearer "+p.Config.APIKey)
 	testReq.Header.Set("Content-Type", "application/json")
 
 	testResp, err := p.httpClient.Do(testReq)
-	testCancel()
 	if err != nil {
-		logrus.Debugf("Completions test failed for %s upstream %s: %v", p.Config.Name, upstreamModel, err)
 		return
 	}
 	defer testResp.Body.Close()
 
-	// 检查completions响应：200表示成功，或者400/401表示模型可能不兼容但服务可用
+	// 检查completions响应：200表示成功，或者400表示模型可能不兼容但服务可用
 	if testResp.StatusCode == http.StatusOK || testResp.StatusCode == http.StatusBadRequest {
-		p.mu.Lock()
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.FailureCount.Store(0)
 			health.Healthy.Store(true)
-			p.modelHealths[upstreamModel] = health
 		}
-		p.mu.Unlock()
-		logrus.Infof("Provider %s upstream %s recovered after health check (completions status: %d)", p.Config.Name, upstreamModel, testResp.StatusCode)
-	} else {
-		logrus.Debugf("Completions test returned %d for %s upstream %s", testResp.StatusCode, p.Config.Name, upstreamModel)
+		log_helper.Info(fmt.Sprintf("Provider %s upstream %s recovered", p.Config.Name, upstreamModel))
 	}
 }
 
@@ -510,18 +523,18 @@ func (m *Manager) GetStats() []ProviderStats {
 		totalModelFailures := int32(0)
 		allModelsHealthy := true
 
-		for alias, health := range p.modelHealths {
+		for upstreamModel, health := range p.modelHealths {
 			fc := health.FailureCount.Load()
 			totalModelFailures += fc
 			if !health.Healthy.Load() {
 				allModelsHealthy = false
 			}
-			// 获取上游模型名
+			// 查找对应的别名
 			for _, mm := range p.Config.ModelMappings {
-				if mm.Alias == alias {
+				if mm.Upstream == upstreamModel {
 					modelHealths = append(modelHealths, ProviderModelHealth{
 						ProviderName:  p.Config.Name,
-						ModelAlias:    alias,
+						ModelAlias:    mm.Alias,
 						UpstreamModel: mm.Upstream,
 						Healthy:       health.Healthy.Load(),
 						FailureCount:  fc,

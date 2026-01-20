@@ -3,9 +3,10 @@ package db_helper
 import (
 	"context"
 	"fmt"
-	"gin_base/app/helper/log_helper"
-	"gorm.io/gorm/logger"
+	"gin_base/app/helper/common_log_helper"
 	"time"
+
+	"gorm.io/gorm/logger"
 )
 
 // 自定义 Logger
@@ -38,6 +39,6 @@ func (dl *DbLogger) Trace(ctx context.Context, begin time.Time, fc func() (strin
 			"waste_time": fmt.Sprintf("%.6f", float64(time.Since(begin).Seconds())),
 		})
 
-		log_helper.QueueCommonLog(logData)
+		common_log_helper.QueueCommonLog(logData)
 	}()
 }
