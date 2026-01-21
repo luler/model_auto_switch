@@ -3,11 +3,10 @@ package upstream
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"gin_base/app/helper/log_helper"
 	"io"
-	"math/rand"
+	"net"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -16,23 +15,23 @@ import (
 
 // ModelMapping 模型映射配置
 type ModelMapping struct {
-	Alias       string `json:"alias" mapstructure:"alias"`               // 对外暴露的别名（可选，不填则等于 upstream）
-	Upstream    string `json:"upstream" mapstructure:"upstream"`         // 上游实际模型名（必填）
-	Priority    int    `json:"priority" mapstructure:"priority"`         // 优先级（数值越小优先级越高，默认0）
-	Weight      int    `json:"weight" mapstructure:"weight"`             // 负载均衡权重（默认1）
-	MaxFailures *int   `json:"max_failures" mapstructure:"max_failures"` // 该模型的连续失败阈值（可选，不填则使用全局配置）
+	Alias       string `json:"alias" yaml:"alias" mapstructure:"alias"`                                          // 对外暴露的别名（可选，不填则等于 upstream）
+	Upstream    string `json:"upstream" yaml:"upstream" mapstructure:"upstream"`                                 // 上游实际模型名（必填）
+	Priority    int    `json:"priority" yaml:"priority" mapstructure:"priority"`                                 // 优先级（数值越小优先级越高，默认0）
+	Weight      int    `json:"weight" yaml:"weight" mapstructure:"weight"`                                       // 负载均衡权重（默认1）
+	MaxFailures *int   `json:"max_failures,omitempty" yaml:"max_failures,omitempty" mapstructure:"max_failures"` // 该模型的连续失败阈值（可选，不填则使用全局配置）
 }
 
 // ProviderConfig 上游供应商配置
 type ProviderConfig struct {
-	Name          string         `json:"name" mapstructure:"name"`                     // 供应商名称
-	BaseURL       string         `json:"base_url" mapstructure:"base_url"`             // 基础URL
-	APIKey        string         `json:"api_key" mapstructure:"api_key"`               // API Key
-	Weight        int            `json:"weight" mapstructure:"weight"`                 // 负载均衡权重（默认1）
-	Priority      int            `json:"priority" mapstructure:"priority"`             // 优先级（数值越小优先级越高，默认0）
-	Timeout       int            `json:"timeout" mapstructure:"timeout"`               // 超时时间（秒）
-	ModelMappings []ModelMapping `json:"model_mappings" mapstructure:"model_mappings"` // 模型映射
-	ExcludeParams []string       `json:"exclude_params" mapstructure:"exclude_params"` // 要过滤的参数列表
+	Name          string         `json:"name" yaml:"name" mapstructure:"name"`                               // 供应商名称
+	BaseURL       string         `json:"base_url" yaml:"base_url" mapstructure:"base_url"`                   // 基础URL
+	APIKey        string         `json:"api_key" yaml:"api_key" mapstructure:"api_key"`                      // API Key
+	Weight        int            `json:"weight" yaml:"weight" mapstructure:"weight"`                         // 负载均衡权重（默认1）
+	Priority      int            `json:"priority" yaml:"priority" mapstructure:"priority"`                   // 优先级（数值越小优先级越高，默认0）
+	Timeout       int            `json:"timeout" yaml:"timeout" mapstructure:"timeout"`                      // 超时时间（秒）
+	ModelMappings []ModelMapping `json:"model_mappings" yaml:"model_mappings" mapstructure:"model_mappings"` // 模型映射
+	ExcludeParams []string       `json:"exclude_params" yaml:"exclude_params" mapstructure:"exclude_params"` // 要过滤的参数列表
 }
 
 // ProviderModel 供应商+模型组合（用于路由）
@@ -57,7 +56,8 @@ type Provider struct {
 	totalReqs    atomic.Int64            // 总请求数
 	successReqs  atomic.Int64            // 成功请求数
 	mu           sync.RWMutex            // 保护其他字段
-	httpClient   *http.Client            // HTTP 客户端
+	httpClient   *http.Client            // HTTP 客户端（非流式请求）
+	streamClient *http.Client            // HTTP 客户端（流式请求，无超时）
 	modelIndex   map[string][]int        // alias -> ModelMappings 索引
 	modelHealths map[string]*ModelHealth // upstream -> ModelHealth (使用指针避免拷贝问题)
 }
@@ -104,15 +104,6 @@ type ManagerConfig struct {
 	HealthCheckPeriod time.Duration // 健康检查周期
 }
 
-// DefaultManagerConfig 默认管理器配置
-func DefaultManagerConfig() ManagerConfig {
-	return ManagerConfig{
-		MaxFailures:       3,
-		RecoveryInterval:  30 * time.Second,
-		HealthCheckPeriod: 60 * time.Second,
-	}
-}
-
 // NewManager 创建供应商管理器
 func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 	m := &Manager{
@@ -142,15 +133,27 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 			}
 		}
 
+		// 创建优化的 Transport 配置
+		transport := &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			MaxIdleConns:        500,
+			MaxIdleConnsPerHost: 100,
+			MaxConnsPerHost:     200,
+			IdleConnTimeout:     90 * time.Second,
+		}
+
 		p := &Provider{
 			Config: cfg,
 			httpClient: &http.Client{
-				Timeout: time.Duration(cfg.Timeout) * time.Second,
-				Transport: &http.Transport{
-					MaxIdleConns:        100,
-					MaxIdleConnsPerHost: 20,
-					IdleConnTimeout:     90 * time.Second,
-				},
+				Timeout:   time.Duration(cfg.Timeout) * time.Second,
+				Transport: transport,
+			},
+			streamClient: &http.Client{
+				// 流式请求不设置超时，由上下文控制
+				Transport: transport,
 			},
 			modelIndex:   make(map[string][]int),
 			modelHealths: make(map[string]*ModelHealth),
@@ -330,8 +333,9 @@ func (m *Manager) SelectProviderModel(alias string) *ProviderModel {
 		totalWeight += pm.GetCombinedWeight()
 	}
 
+	// Add(1) 返回加1后的值，所以用 counter-1 让轮询从索引0开始
 	counter := m.roundRobinCounter.Add(1)
-	targetWeight := int(counter % uint64(totalWeight))
+	targetWeight := int((counter - 1) % uint64(totalWeight))
 
 	currentWeight := 0
 	for i := range topPriority {
@@ -432,7 +436,6 @@ func (m *Manager) checkAndRecover() {
 	}
 
 	if len(unhealthyModels) == 0 {
-		log_helper.Debug("Health check: all models healthy")
 		return
 	}
 
@@ -526,6 +529,16 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 // Stop 停止管理器
 func (m *Manager) Stop() {
 	close(m.stopChan)
+}
+
+// GetRoundRobinCounter 获取当前轮询计数器值
+func (m *Manager) GetRoundRobinCounter() uint64 {
+	return m.roundRobinCounter.Load()
+}
+
+// SetRoundRobinCounter 设置轮询计数器值（用于热重载时保留状态）
+func (m *Manager) SetRoundRobinCounter(value uint64) {
+	m.roundRobinCounter.Store(value)
 }
 
 // GetStats 获取所有供应商统计信息
@@ -647,37 +660,5 @@ func (p *Provider) ProxyStreamRequest(ctx context.Context, path string, body []b
 		}
 	}
 
-	// 使用不带超时的传输层（流式请求可能持续很长时间）
-	client := &http.Client{
-		Transport: &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 20,
-			IdleConnTimeout:     90 * time.Second,
-		},
-	}
-
-	return client.Do(req)
-}
-
-// GenerateRequestID 生成请求ID
-func GenerateRequestID() string {
-	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 24)
-	for i := range b {
-		b[i] = charset[rand.Intn(len(charset))]
-	}
-	return "chatcmpl-" + string(b)
-}
-
-// ParseErrorResponse 解析错误响应
-func ParseErrorResponse(body []byte) string {
-	var errResp struct {
-		Error struct {
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(body, &errResp); err == nil && errResp.Error.Message != "" {
-		return errResp.Error.Message
-	}
-	return string(body)
+	return p.streamClient.Do(req)
 }

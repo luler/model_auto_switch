@@ -24,7 +24,8 @@ providers:
     timeout: 120         # 超时时间（秒）
     # 过滤上游不支持的参数
     exclude_params:
-      - "thinking"
+      - thinking
+      - verbosity
     model_mappings:
       # 设置 alias，对外暴露 alias 名称
       - upstream: "gpt-5"

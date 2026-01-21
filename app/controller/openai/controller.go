@@ -3,6 +3,8 @@ package openai
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"gin_base/app/helper/log_helper"
@@ -16,10 +18,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// generateRequestID 生成短随机请求ID
+func generateRequestID() string {
+	b := make([]byte, 4)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// ManagerGetter 定义获取 Manager 的接口
+type ManagerGetter interface {
+	GetManager() *upstream.Manager
+}
+
 // Controller OpenAI 兼容接口控制器
 type Controller struct {
-	manager    *upstream.Manager
-	maxRetries int // 单次请求最大尝试次数
+	managerGetter ManagerGetter     // 动态获取 manager
+	manager       *upstream.Manager // 静态 manager（备用）
+	maxRetries    int               // 单次请求最大尝试次数
 }
 
 // NewController 创建控制器
@@ -31,6 +46,19 @@ func NewController(manager *upstream.Manager, maxRetries int) *Controller {
 		manager:    manager,
 		maxRetries: maxRetries,
 	}
+}
+
+// SetManagerGetter 设置 ManagerGetter（用于动态获取 manager）
+func (c *Controller) SetManagerGetter(getter ManagerGetter) {
+	c.managerGetter = getter
+}
+
+// getManager 获取当前的 manager
+func (c *Controller) getManager() *upstream.Manager {
+	if c.managerGetter != nil {
+		return c.managerGetter.GetManager()
+	}
+	return c.manager
 }
 
 // ChatCompletions 处理 /v1/chat/completions 请求
@@ -77,24 +105,28 @@ func (c *Controller) ChatCompletions(ctx *gin.Context) {
 	// 保存原始模型名（别名）
 	aliasModel := req.Model
 
+	// 生成请求ID用于日志追踪
+	reqID := generateRequestID()
+
 	if req.Stream {
-		c.handleStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel)
+		c.handleStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel, reqID)
 	} else {
-		c.handleNonStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel)
+		c.handleNonStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel, reqID)
 	}
 }
 
 // getLoadBalancedProviderModels 获取负载均衡后的 ProviderModel 列表
 // 首选的 provider 会被放在第一位，其余按优先级/权重顺序排列用于故障转移
 func (c *Controller) getLoadBalancedProviderModels(alias string) []upstream.ProviderModel {
+	manager := c.getManager()
 	// 获取按优先级/权重排序的完整列表
-	allModels := c.manager.GetProviderModels(alias)
+	allModels := manager.GetProviderModels(alias)
 	if len(allModels) <= 1 {
 		return allModels
 	}
 
 	// 使用负载均衡选择首选 ProviderModel
-	selected := c.manager.SelectProviderModel(alias)
+	selected := manager.SelectProviderModel(alias)
 	if selected == nil {
 		return allModels
 	}
@@ -160,7 +192,7 @@ func processRequestBody(body []byte, pm upstream.ProviderModel, aliasModel strin
 }
 
 // handleNonStreamRequest 处理非流式请求
-func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string) {
+func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string, reqID string) {
 	var lastErr error
 	var triedProviders []string
 
@@ -185,7 +217,8 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		if err != nil {
 			cancel()
 			lastErr = err
-			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: %v", reqID, aliasModel, i+1, providerName, err))
+			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			continue
 		}
 
@@ -195,32 +228,38 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 
 		if err != nil {
 			lastErr = err
-			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: %v", reqID, aliasModel, i+1, providerName, err))
+			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			continue
 		}
 
 		// 检查HTTP状态码
 		if resp.StatusCode >= 500 {
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
-			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: status %d", reqID, aliasModel, i+1, providerName, resp.StatusCode))
+			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			continue
 		}
 
 		// 成功响应 - 替换响应中的模型名为别名
 		respBody = replaceModelInResponse(respBody, pm.Mapping.Upstream, aliasModel)
-		c.manager.RecordSuccess(pm.Provider, pm.Mapping.Upstream)
-		log_helper.Info(fmt.Sprintf("[%s] %s -> %s/%s", aliasModel, "completions", pm.Provider.Config.Name, pm.Mapping.Upstream))
+		c.getManager().RecordSuccess(pm.Provider, pm.Mapping.Upstream)
+		attemptInfo := fmt.Sprintf("#%d", i+1)
+		if i > 0 {
+			attemptInfo += "(retry)"
+		}
+		log_helper.Info(fmt.Sprintf("[%s] %s %s completions -> %s/%s", reqID, aliasModel, attemptInfo, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		ctx.Data(resp.StatusCode, "application/json", respBody)
 		return
 	}
 
 	// 所有供应商都失败
-	log_helper.Error(fmt.Sprintf("[%s] all providers failed: %v, tried: %v", aliasModel, lastErr, triedProviders))
+	log_helper.Error(fmt.Sprintf("[%s] %s all providers failed: %v, tried: %v", reqID, aliasModel, lastErr, triedProviders))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
 }
 
 // handleStreamRequest 处理流式请求
-func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string) {
+func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string, reqID string) {
 	var lastErr error
 	var triedProviders []string
 
@@ -241,7 +280,8 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		resp, err := pm.Provider.ProxyStreamRequest(ctx.Request.Context(), "/v1/chat/completions", reqBody, headers)
 		if err != nil {
 			lastErr = err
-			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, err))
+			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			continue
 		}
 
@@ -249,7 +289,8 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		if resp.StatusCode >= 500 {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
-			c.manager.RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: status %d", reqID, aliasModel, i+1, providerName, resp.StatusCode))
+			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			continue
 		}
 
@@ -261,14 +302,18 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		}
 
 		// 成功，开始流式传输
-		c.manager.RecordSuccess(pm.Provider, pm.Mapping.Upstream)
-		log_helper.Info(fmt.Sprintf("[%s] stream -> %s/%s", aliasModel, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		c.getManager().RecordSuccess(pm.Provider, pm.Mapping.Upstream)
+		attemptInfo := fmt.Sprintf("#%d", i+1)
+		if i > 0 {
+			attemptInfo += "(retry)"
+		}
+		log_helper.Info(fmt.Sprintf("[%s] %s %s stream -> %s/%s", reqID, aliasModel, attemptInfo, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		c.streamResponse(ctx, resp, pm.Mapping.Upstream, aliasModel)
 		return
 	}
 
 	// 所有供应商都失败
-	log_helper.Error(fmt.Sprintf("[%s] stream all providers failed: %v, tried: %v", aliasModel, lastErr, triedProviders))
+	log_helper.Error(fmt.Sprintf("[%s] %s stream all providers failed: %v, tried: %v", reqID, aliasModel, lastErr, triedProviders))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
 }
 
@@ -328,7 +373,7 @@ func (c *Controller) streamResponse(ctx *gin.Context, resp *http.Response, upstr
 
 // Models 处理 /v1/models 请求
 func (c *Controller) Models(ctx *gin.Context) {
-	models := c.manager.GetAllModels()
+	models := c.getManager().GetAllModels()
 
 	response := model.ModelsResponse{
 		Object: "list",
@@ -351,7 +396,7 @@ func (c *Controller) Models(ctx *gin.Context) {
 // GetModel 处理 /v1/models/:model 请求
 func (c *Controller) GetModel(ctx *gin.Context) {
 	modelID := ctx.Param("model")
-	models := c.manager.GetAllModels()
+	models := c.getManager().GetAllModels()
 
 	for _, m := range models {
 		if m == modelID {
@@ -370,7 +415,7 @@ func (c *Controller) GetModel(ctx *gin.Context) {
 
 // Stats 返回供应商状态统计
 func (c *Controller) Stats(ctx *gin.Context) {
-	stats := c.manager.GetStats()
+	stats := c.getManager().GetStats()
 	ctx.JSON(http.StatusOK, gin.H{
 		"providers": stats,
 	})

@@ -1,6 +1,7 @@
 package route
 
 import (
+	"gin_base/app/controller/admin"
 	"gin_base/app/controller/common"
 	"gin_base/app/controller/openai"
 	"gin_base/app/helper/response_helper"
@@ -24,8 +25,26 @@ func InitRouter(e *gin.Engine) {
 }
 
 // InitOpenAIRouter 初始化 OpenAI 兼容路由
-func InitOpenAIRouter(e *gin.Engine, manager *upstream.Manager, apiKeys []string, maxRetries int) {
+func InitOpenAIRouter(e *gin.Engine, manager *upstream.Manager, apiKeys []string, maxRetries int) *admin.AdminController {
+	// 创建 Admin 控制器
+	adminCtrl := admin.NewAdminController(manager, apiKeys)
+
+	// 创建 OpenAI 控制器，并设置 ManagerGetter
 	ctrl := openai.NewController(manager, maxRetries)
+	ctrl.SetManagerGetter(adminCtrl) // 让 openai controller 从 admin controller 获取 manager
+
+	// 首页
+	e.GET("/", common.ModelAuthSwitchPage)
+
+	// favicon
+	e.StaticFile("/favicon.png", "./static/image/favicon.png")
+
+	// Admin API 组
+	adminAPI := e.Group("/api/admin")
+	adminAPI.POST("/login", middleware.IpRateLimit(10.0/3600, 10), adminCtrl.Login)
+	adminAPI.GET("/health", adminCtrl.GetHealth)
+	adminAPI.GET("/config", adminCtrl.GetConfig)
+	adminAPI.POST("/config", adminCtrl.SaveConfig)
 
 	// v1 API 组
 	v1 := e.Group("/v1")
@@ -45,4 +64,6 @@ func InitOpenAIRouter(e *gin.Engine, manager *upstream.Manager, apiKeys []string
 	// 内部状态接口（用于监控）
 	internal := e.Group("/internal")
 	internal.GET("/stats", ctrl.Stats)
+
+	return adminCtrl
 }

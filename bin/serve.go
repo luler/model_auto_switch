@@ -124,8 +124,8 @@ func initOpenAIProxy(engine *gin.Engine) *upstream.Manager {
 
 	manager := upstream.NewManager(config.Providers, mgrConfig)
 
-	// 初始化路由
-	route.InitOpenAIRouter(engine, manager, config.APIKeys, config.MaxRetries)
+	// 初始化路由（忽略返回的 adminCtrl，因为它会在内部保持对 manager 的引用）
+	_ = route.InitOpenAIRouter(engine, manager, config.APIKeys, config.MaxRetries)
 
 	logrus.Infof("OpenAI proxy initialized with %d providers (max_retries: %d)", len(config.Providers), config.MaxRetries)
 	for _, p := range config.Providers {
