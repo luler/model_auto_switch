@@ -419,6 +419,25 @@ func (m *Manager) checkAndRecover() {
 	providers := m.providers
 	m.mu.RUnlock()
 
+	// 统计不健康的模型
+	var unhealthyModels []string
+	for _, p := range providers {
+		p.mu.RLock()
+		for upstream, health := range p.modelHealths {
+			if !health.Healthy.Load() {
+				unhealthyModels = append(unhealthyModels, fmt.Sprintf("%s/%s", p.Config.Name, upstream))
+			}
+		}
+		p.mu.RUnlock()
+	}
+
+	if len(unhealthyModels) == 0 {
+		log_helper.Debug("Health check: all models healthy")
+		return
+	}
+
+	log_helper.Info(fmt.Sprintf("Health check: %d unhealthy models: %v", len(unhealthyModels), unhealthyModels))
+
 	// 使用 recoveryInterval 作为最小检查间隔
 	minCheckInterval := m.recoveryInterval.Nanoseconds()
 
@@ -437,10 +456,9 @@ func (m *Manager) checkAndRecover() {
 				if now-lastCheckTime >= minCheckInterval {
 					// 更新检查时间
 					health.LastCheckTime.Store(now)
-					// 同步执行检查（不使用go），确保检查完成前锁不会被释放
+					// 同步执行检查
 					m.tryRecoverModel(p, upstream)
 				}
-				// 无论是否执行检查，检查完成后释放锁
 				health.recoverMutex.Unlock()
 			}
 		}
@@ -455,17 +473,20 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", p.Config.BaseURL+"/v1/models", nil)
 	if err != nil {
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: create request failed: %v", p.Config.Name, upstreamModel, err))
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+p.Config.APIKey)
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: models API failed: %v", p.Config.Name, upstreamModel, err))
 		return
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: models API returned %d", p.Config.Name, upstreamModel, resp.StatusCode))
 		return
 	}
 
@@ -476,6 +497,7 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`, upstreamModel))
 	testReq, err := http.NewRequestWithContext(testCtx, "POST", p.Config.BaseURL+"/v1/chat/completions", bytes.NewReader(testReqBody))
 	if err != nil {
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: create completions request failed: %v", p.Config.Name, upstreamModel, err))
 		return
 	}
 
@@ -484,6 +506,7 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 
 	testResp, err := p.httpClient.Do(testReq)
 	if err != nil {
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: completions API failed: %v", p.Config.Name, upstreamModel, err))
 		return
 	}
 	defer testResp.Body.Close()
@@ -494,7 +517,9 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 			health.FailureCount.Store(0)
 			health.Healthy.Store(true)
 		}
-		log_helper.Info(fmt.Sprintf("Provider %s upstream %s recovered", p.Config.Name, upstreamModel))
+		log_helper.Info(fmt.Sprintf("Recovery check %s/%s: recovered (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
+	} else {
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: completions returned %d, still unhealthy", p.Config.Name, upstreamModel, testResp.StatusCode))
 	}
 }
 
