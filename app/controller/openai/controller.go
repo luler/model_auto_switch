@@ -233,8 +233,8 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 			continue
 		}
 
-		// 检查HTTP状态码
-		if resp.StatusCode >= 500 {
+		// 检查HTTP状态码 - 非200都视为失败
+		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: status %d", reqID, aliasModel, i+1, providerName, resp.StatusCode))
 			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
@@ -285,20 +285,13 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 			continue
 		}
 
-		// 检查HTTP状态码
-		if resp.StatusCode >= 500 {
+		// 检查HTTP状态码 - 非200都视为失败
+		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: status %d", reqID, aliasModel, i+1, providerName, resp.StatusCode))
 			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
 			continue
-		}
-
-		if resp.StatusCode >= 400 {
-			respBody, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			ctx.Data(resp.StatusCode, "application/json", respBody)
-			return
 		}
 
 		// 成功，开始流式传输
