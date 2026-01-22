@@ -267,6 +267,34 @@ func (c *AdminController) saveConfig(providers []upstream.ProviderConfig) error 
 	return os.WriteFile(c.configPath, buf.Bytes(), 0644)
 }
 
+// GetLogs 获取最新日志
+func (c *AdminController) GetLogs(ctx *gin.Context) {
+	apiKey := ctx.GetHeader("X-API-Key")
+	if !c.ValidateAPIKey(apiKey) {
+		response_helper.Common(ctx, 401, "未授权")
+		return
+	}
+
+	logPath := filepath.Join("runtime", "logs", "app.log")
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		response_helper.Fail(ctx, "读取日志失败: "+err.Error())
+		return
+	}
+
+	// 获取最新200行
+	lines := bytes.Split(data, []byte("\n"))
+	start := 0
+	if len(lines) > 200 {
+		start = len(lines) - 200
+	}
+	recentLines := lines[start:]
+
+	response_helper.Success(ctx, "获取成功", gin.H{
+		"logs": string(bytes.Join(recentLines, []byte("\n"))),
+	})
+}
+
 // reloadManager 重载 Manager
 func (c *AdminController) reloadManager(config *appconfig.OpenAIProxyConfig) error {
 	oldManager := c.GetManager()
