@@ -46,6 +46,7 @@ func InitOpenAIRouter(e *gin.Engine, manager *upstream.Manager, apiKeys []string
 	adminAPI.GET("/config", adminCtrl.GetConfig)
 	adminAPI.POST("/config", adminCtrl.SaveConfig)
 	adminAPI.GET("/logs", adminCtrl.GetLogs)
+	adminAPI.DELETE("/logs", adminCtrl.ClearLogs)
 
 	// v1 API 组
 	v1 := e.Group("/v1")

@@ -295,6 +295,24 @@ func (c *AdminController) GetLogs(ctx *gin.Context) {
 	})
 }
 
+// ClearLogs 清空日志文件
+func (c *AdminController) ClearLogs(ctx *gin.Context) {
+	apiKey := ctx.GetHeader("X-API-Key")
+	if !c.ValidateAPIKey(apiKey) {
+		response_helper.Common(ctx, 401, "未授权")
+		return
+	}
+
+	logPath := filepath.Join("runtime", "logs", "app.log")
+	if err := os.WriteFile(logPath, []byte{}, 0644); err != nil {
+		response_helper.Fail(ctx, "清空日志失败: "+err.Error())
+		return
+	}
+
+	log_helper.Info("日志文件已清空")
+	response_helper.Success(ctx, "清空成功")
+}
+
 // reloadManager 重载 Manager
 func (c *AdminController) reloadManager(config *appconfig.OpenAIProxyConfig) error {
 	oldManager := c.GetManager()

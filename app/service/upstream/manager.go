@@ -164,17 +164,20 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 			p.modelIndex[mm.Alias] = append(p.modelIndex[mm.Alias], i)
 
 			// 初始化该upstream的健康状态（基于upstream而不是alias）
-			maxFailures := m.maxFailures // 默认使用全局配置
-			if mm.MaxFailures != nil && *mm.MaxFailures > 0 {
-				maxFailures = *mm.MaxFailures // 如果配置了专门用于该模型的值，则覆盖
+			// 同一个upstream只初始化一次，避免重复创建ModelHealth
+			if _, exists := p.modelHealths[mm.Upstream]; !exists {
+				maxFailures := m.maxFailures // 默认使用全局配置
+				if mm.MaxFailures != nil && *mm.MaxFailures > 0 {
+					maxFailures = *mm.MaxFailures // 如果配置了专门用于该模型的值，则覆盖
+				}
+				health := &ModelHealth{
+					maxFailures: maxFailures,
+				}
+				health.Healthy.Store(true)
+				health.LastCheckTime.Store(0) // 初始化为0，确保第一次检查可以触发
+				// 确保每个ModelHealth都有独立的mutex
+				p.modelHealths[mm.Upstream] = health
 			}
-			health := &ModelHealth{
-				maxFailures: maxFailures,
-			}
-			health.Healthy.Store(true)
-			health.LastCheckTime.Store(0) // 初始化为0，确保第一次检查可以触发
-			// 确保每个ModelHealth都有独立的mutex
-			p.modelHealths[mm.Upstream] = health
 		}
 
 		m.providers = append(m.providers, p)
@@ -567,19 +570,28 @@ func (m *Manager) GetStats() []ProviderStats {
 			if !health.Healthy.Load() {
 				allModelsHealthy = false
 			}
-			// 查找对应的别名
+			// 收集该upstream对应的所有别名
+			var aliases []string
 			for _, mm := range p.Config.ModelMappings {
 				if mm.Upstream == upstreamModel {
-					modelHealths = append(modelHealths, ProviderModelHealth{
-						ProviderName:  p.Config.Name,
-						ModelAlias:    mm.Alias,
-						UpstreamModel: mm.Upstream,
-						Healthy:       health.Healthy.Load(),
-						FailureCount:  fc,
-					})
-					break
+					aliases = append(aliases, mm.Alias)
 				}
 			}
+			// 使用逗号分隔的别名列表
+			aliasStr := ""
+			for i, a := range aliases {
+				if i > 0 {
+					aliasStr += ","
+				}
+				aliasStr += a
+			}
+			modelHealths = append(modelHealths, ProviderModelHealth{
+				ProviderName:  p.Config.Name,
+				ModelAlias:    aliasStr,
+				UpstreamModel: upstreamModel,
+				Healthy:       health.Healthy.Load(),
+				FailureCount:  fc,
+			})
 		}
 		p.mu.RUnlock()
 
