@@ -2,6 +2,7 @@ package openai
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -294,6 +295,47 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 			continue
 		}
 
+		// 读取前几行，检测流内容中的错误（某些上游返回HTTP 200但流内容包含错误）
+		// 错误可能在第一行或后续行中出现
+		reader := bufio.NewReader(resp.Body)
+		var bufferedLines [][]byte
+		var streamErr error
+
+		// 最多预读取3行进行错误检测
+		for j := 0; j < 3; j++ {
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				if err == io.EOF && len(line) > 0 {
+					// EOF但有数据，保存并检测
+					bufferedLines = append(bufferedLines, line)
+					if detectErr := detectStreamError(line); detectErr != nil {
+						streamErr = detectErr
+					}
+				}
+				break
+			}
+			bufferedLines = append(bufferedLines, line)
+
+			// 检测错误
+			if detectErr := detectStreamError(line); detectErr != nil {
+				streamErr = detectErr
+				break
+			}
+
+			// 如果遇到有实际内容的chunk（非空choices），说明流正常，停止预读
+			if isValidStreamChunk(line) {
+				break
+			}
+		}
+
+		if streamErr != nil {
+			resp.Body.Close()
+			lastErr = streamErr
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, lastErr))
+			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			continue
+		}
+
 		// 成功，开始流式传输
 		c.getManager().RecordSuccess(pm.Provider, aliasModel, pm.Mapping.Upstream)
 		attemptInfo := fmt.Sprintf("#%d", i+1)
@@ -301,7 +343,7 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 			attemptInfo += "(retry)"
 		}
 		log_helper.Info(fmt.Sprintf("[%s] %s %s stream -> %s/%s", reqID, aliasModel, attemptInfo, pm.Provider.Config.Name, pm.Mapping.Upstream))
-		c.streamResponse(ctx, resp, pm.Mapping.Upstream, aliasModel)
+		c.streamResponseWithBufferedLines(ctx, resp, reader, bufferedLines, pm.Mapping.Upstream, aliasModel)
 		return
 	}
 
@@ -412,6 +454,111 @@ func (c *Controller) Stats(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{
 		"providers": stats,
 	})
+}
+
+// detectStreamError 检测流内容中的错误（OpenAI标准错误格式）
+// 某些上游（如Gemini）返回HTTP 200但在流内容中包含错误
+func detectStreamError(line []byte) error {
+	// 快速检测：如果不包含 "error" 关键字，直接返回
+	if !bytes.Contains(line, []byte(`"error"`)) {
+		return nil
+	}
+
+	// 移除 SSE 前缀 "data: "
+	data := line
+	if bytes.HasPrefix(line, []byte("data: ")) {
+		data = bytes.TrimPrefix(line, []byte("data: "))
+	}
+	data = bytes.TrimSpace(data)
+
+	// 跳过空行和结束标记
+	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
+		return nil
+	}
+
+	// 尝试解析JSON，检测error字段
+	var resp map[string]interface{}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil // 解析失败不视为错误，可能是正常的流数据
+	}
+
+	// 检测 error 字段（可能是对象或字符串）
+	if errField, exists := resp["error"]; exists && errField != nil {
+		switch e := errField.(type) {
+		case string:
+			return fmt.Errorf("stream error: %s", e)
+		case map[string]interface{}:
+			msg := "upstream error"
+			if m, ok := e["message"].(string); ok && m != "" {
+				msg = m
+			}
+			code := e["code"]
+			return fmt.Errorf("stream error: %s (code: %v)", msg, code)
+		default:
+			return fmt.Errorf("stream error: %v", errField)
+		}
+	}
+
+	return nil
+}
+
+// isValidStreamChunk 检测是否是有效的流数据chunk（包含实际内容）
+func isValidStreamChunk(line []byte) bool {
+	// 快速检测：检查是否包含实际内容的特征
+	// 有效chunk通常包含 "content":" 或 "role":"
+	return bytes.Contains(line, []byte(`"content":"`)) || bytes.Contains(line, []byte(`"role":"`))
+}
+
+// streamResponseWithBufferedLines 流式传输响应（包含已缓冲的行）
+func (c *Controller) streamResponseWithBufferedLines(ctx *gin.Context, resp *http.Response, reader *bufio.Reader, bufferedLines [][]byte, upstreamModel, aliasModel string) {
+	defer resp.Body.Close()
+
+	flusher, ok := ctx.Writer.(http.Flusher)
+	if !ok {
+		c.sendError(ctx, http.StatusInternalServerError, "server_error", "streaming not supported")
+		return
+	}
+
+	ctx.Header("Content-Type", "text/event-stream")
+	ctx.Header("Cache-Control", "no-cache")
+	ctx.Header("Connection", "keep-alive")
+	ctx.Header("Transfer-Encoding", "chunked")
+
+	// 先写入已缓冲的行
+	for _, line := range bufferedLines {
+		line = replaceModelInStreamLine(line, upstreamModel, aliasModel)
+		if _, writeErr := ctx.Writer.Write(line); writeErr != nil {
+			return
+		}
+		flusher.Flush()
+
+		// 检查是否是结束标记
+		if strings.TrimSpace(string(line)) == "data: [DONE]" {
+			return
+		}
+	}
+
+	// 继续读取剩余内容
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err != nil {
+			break
+		}
+
+		// 替换模型名
+		line = replaceModelInStreamLine(line, upstreamModel, aliasModel)
+
+		// 写入响应
+		if _, writeErr := ctx.Writer.Write(line); writeErr != nil {
+			break
+		}
+		flusher.Flush()
+
+		// 检查是否是结束标记
+		if strings.TrimSpace(string(line)) == "data: [DONE]" {
+			break
+		}
+	}
 }
 
 // sendError 发送 OpenAI 格式的错误响应
