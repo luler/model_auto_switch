@@ -591,17 +591,13 @@ func (m *Manager) GetStats() []ProviderStats {
 		// 收集模型健康状态：遍历 ModelMappings，为每个 alias+upstream 组合生成一行
 		p.mu.RLock()
 		modelHealths := make([]ProviderModelHealth, 0, len(p.Config.ModelMappings))
-		totalModelFailures := int32(0)
 		allModelsHealthy := true
 
 		for _, mm := range p.Config.ModelMappings {
 			// 获取健康状态（按 upstream 维度）
 			var healthy bool = true
-			var fc int32 = 0
 			if health, exists := p.modelHealths[mm.Upstream]; exists {
 				healthy = health.Healthy.Load()
-				fc = health.FailureCount.Load()
-				totalModelFailures += fc
 				if !healthy {
 					allModelsHealthy = false
 				}
@@ -620,12 +616,15 @@ func (m *Manager) GetStats() []ProviderStats {
 				modelRate = float64(modelSuccess) / float64(modelTotal) * 100
 			}
 
+			// 累计失败次数 = 总请求 - 成功次数
+			modelFailure := modelTotal - modelSuccess
+
 			modelHealths = append(modelHealths, ProviderModelHealth{
 				ProviderName:  p.Config.Name,
 				ModelAlias:    mm.Alias,
 				UpstreamModel: mm.Upstream,
 				Healthy:       healthy,
-				FailureCount:  fc,
+				FailureCount:  int32(modelFailure),
 				TotalReqs:     modelTotal,
 				SuccessReqs:   modelSuccess,
 				SuccessRate:   modelRate,
@@ -633,10 +632,13 @@ func (m *Manager) GetStats() []ProviderStats {
 		}
 		p.mu.RUnlock()
 
+		// Provider 级别的累计失败次数
+		failure := total - success
+
 		stats = append(stats, ProviderStats{
 			Name:         p.Config.Name,
 			Healthy:      allModelsHealthy,
-			FailureCount: totalModelFailures,
+			FailureCount: int32(failure),
 			TotalReqs:    total,
 			SuccessReqs:  success,
 			SuccessRate:  rate,

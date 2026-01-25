@@ -931,6 +931,8 @@
                         ...p,
                         exclude_params_str: (p.exclude_params || []).join(', ')
                     }));
+                    // 对模型映射进行排序
+                    this.sortAllProviderMappings();
                     this.globalConfig = {
                         max_retries: data.max_retries || 0,
                         max_failures: data.max_failures || 0,
@@ -984,6 +986,8 @@
                         this.saveSuccess = '';
                     }, 3000);
 
+                    // 对模型映射进行排序
+                    this.sortAllProviderMappings();
                     // 刷新健康状态
                     this.fetchHealth();
                 } catch (e) {
@@ -1031,6 +1035,33 @@
             },
             removeModel(pIdx, mIdx) {
                 this.providers[pIdx].model_mappings.splice(mIdx, 1);
+            },
+            // 对模型映射进行排序：别名（自然排序）、优先级（小到大）、权重（高到低）
+            sortModelMappings(mappings) {
+                if (!mappings || !Array.isArray(mappings)) return mappings;
+                return mappings.sort((a, b) => {
+                    // 1. 按别名自然排序
+                    const aliasA = (a.alias || a.upstream || '').toLowerCase();
+                    const aliasB = (b.alias || b.upstream || '').toLowerCase();
+                    const aliasCompare = aliasA.localeCompare(aliasB, undefined, {numeric: true, sensitivity: 'base'});
+                    if (aliasCompare !== 0) return aliasCompare;
+                    // 2. 按优先级升序（小到大，越小越优先）
+                    const priorityA = a.priority || 0;
+                    const priorityB = b.priority || 0;
+                    if (priorityA !== priorityB) return priorityA - priorityB;
+                    // 3. 按权重降序（高到低）
+                    const weightA = a.weight || 1;
+                    const weightB = b.weight || 1;
+                    return weightB - weightA;
+                });
+            },
+            // 对所有 provider 的模型映射进行排序
+            sortAllProviderMappings() {
+                this.providers.forEach(p => {
+                    if (p.model_mappings) {
+                        this.sortModelMappings(p.model_mappings);
+                    }
+                });
             },
             switchToLogs() {
                 this.activeTab = 'logs';
