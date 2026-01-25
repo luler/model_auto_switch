@@ -218,7 +218,7 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 			cancel()
 			lastErr = err
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: %v", reqID, aliasModel, i+1, providerName, err))
-			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
 		}
 
@@ -229,7 +229,7 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		if err != nil {
 			lastErr = err
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: %v", reqID, aliasModel, i+1, providerName, err))
-			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
 		}
 
@@ -237,13 +237,13 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: status %d", reqID, aliasModel, i+1, providerName, resp.StatusCode))
-			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
 		}
 
 		// 成功响应 - 替换响应中的模型名为别名
 		respBody = replaceModelInResponse(respBody, pm.Mapping.Upstream, aliasModel)
-		c.getManager().RecordSuccess(pm.Provider, pm.Mapping.Upstream)
+		c.getManager().RecordSuccess(pm.Provider, aliasModel, pm.Mapping.Upstream)
 		attemptInfo := fmt.Sprintf("#%d", i+1)
 		if i > 0 {
 			attemptInfo += "(retry)"
@@ -281,7 +281,7 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		if err != nil {
 			lastErr = err
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, err))
-			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
 		}
 
@@ -290,12 +290,12 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: status %d", reqID, aliasModel, i+1, providerName, resp.StatusCode))
-			c.getManager().RecordFailure(pm.Provider, pm.Mapping.Upstream)
+			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
 		}
 
 		// 成功，开始流式传输
-		c.getManager().RecordSuccess(pm.Provider, pm.Mapping.Upstream)
+		c.getManager().RecordSuccess(pm.Provider, aliasModel, pm.Mapping.Upstream)
 		attemptInfo := fmt.Sprintf("#%d", i+1)
 		if i > 0 {
 			attemptInfo += "(retry)"

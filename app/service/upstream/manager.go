@@ -40,7 +40,7 @@ type ProviderModel struct {
 	Mapping  ModelMapping
 }
 
-// ModelHealth 模型健康状态
+// ModelHealth 模型健康状态（按 upstream 存储）
 type ModelHealth struct {
 	Healthy       atomic.Bool  // 是否健康
 	FailureCount  atomic.Int32 // 连续失败次数
@@ -48,6 +48,12 @@ type ModelHealth struct {
 	LastCheckTime atomic.Int64 // 上次健康检查时间戳(纳秒)
 	maxFailures   int          // 该模型的连续失败阈值
 	recoverMutex  sync.Mutex   // 恢复检查互斥锁，防止并发重复检查
+}
+
+// ModelStats 模型统计数据（按 alias+upstream 组合存储）
+type ModelStats struct {
+	TotalReqs   atomic.Int64 // 总请求数
+	SuccessReqs atomic.Int64 // 成功请求数
 }
 
 // Provider 上游供应商
@@ -59,16 +65,20 @@ type Provider struct {
 	httpClient   *http.Client            // HTTP 客户端（非流式请求）
 	streamClient *http.Client            // HTTP 客户端（流式请求，无超时）
 	modelIndex   map[string][]int        // alias -> ModelMappings 索引
-	modelHealths map[string]*ModelHealth // upstream -> ModelHealth (使用指针避免拷贝问题)
+	modelHealths map[string]*ModelHealth // upstream -> ModelHealth (健康状态)
+	modelStats   map[string]*ModelStats  // "alias|upstream" -> ModelStats (统计数据)
 }
 
 // ProviderModelHealth 供应商模型健康信息
 type ProviderModelHealth struct {
-	ProviderName  string `json:"provider_name"`
-	ModelAlias    string `json:"model_alias"`    // 模型别名
-	UpstreamModel string `json:"upstream_model"` // 上游模型名
-	Healthy       bool   `json:"healthy"`
-	FailureCount  int32  `json:"failure_count"`
+	ProviderName  string  `json:"provider_name"`
+	ModelAlias    string  `json:"model_alias"`    // 模型别名
+	UpstreamModel string  `json:"upstream_model"` // 上游模型名
+	Healthy       bool    `json:"healthy"`
+	FailureCount  int32   `json:"failure_count"`
+	TotalReqs     int64   `json:"total_requests"`   // 总请求数
+	SuccessReqs   int64   `json:"success_requests"` // 成功请求数
+	SuccessRate   float64 `json:"success_rate"`     // 成功率(%)
 }
 
 // ProviderStats 供应商统计信息
@@ -157,9 +167,10 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 			},
 			modelIndex:   make(map[string][]int),
 			modelHealths: make(map[string]*ModelHealth),
+			modelStats:   make(map[string]*ModelStats),
 		}
 
-		// 构建模型索引和初始化模型健康状态
+		// 构建模型索引和初始化模型健康状态、统计数据
 		for i, mm := range cfg.ModelMappings {
 			p.modelIndex[mm.Alias] = append(p.modelIndex[mm.Alias], i)
 
@@ -177,6 +188,12 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 				health.LastCheckTime.Store(0) // 初始化为0，确保第一次检查可以触发
 				// 确保每个ModelHealth都有独立的mutex
 				p.modelHealths[mm.Upstream] = health
+			}
+
+			// 初始化该 alias+upstream 组合的统计数据
+			statsKey := mm.Alias + "|" + mm.Upstream
+			if _, exists := p.modelStats[statsKey]; !exists {
+				p.modelStats[statsKey] = &ModelStats{}
 			}
 		}
 
@@ -363,11 +380,18 @@ func (m *Manager) supportsModel(p *Provider, model string) bool {
 }
 
 // RecordSuccess 记录成功请求
-func (m *Manager) RecordSuccess(p *Provider, upstreamModel string) {
+func (m *Manager) RecordSuccess(p *Provider, alias string, upstreamModel string) {
 	p.totalReqs.Add(1)
 	p.successReqs.Add(1)
 
-	// 重置该upstream的失败计数（使用上游模型名作为key）
+	// 记录 alias+upstream 组合的统计数据
+	statsKey := alias + "|" + upstreamModel
+	if stats, exists := p.modelStats[statsKey]; exists {
+		stats.TotalReqs.Add(1)
+		stats.SuccessReqs.Add(1)
+	}
+
+	// 重置该upstream的失败计数（健康状态按 upstream 维度）
 	if health, exists := p.modelHealths[upstreamModel]; exists {
 		health.FailureCount.Store(0)
 		if !health.Healthy.Load() {
@@ -378,10 +402,16 @@ func (m *Manager) RecordSuccess(p *Provider, upstreamModel string) {
 }
 
 // RecordFailure 记录失败请求
-func (m *Manager) RecordFailure(p *Provider, upstreamModel string) {
+func (m *Manager) RecordFailure(p *Provider, alias string, upstreamModel string) {
 	p.totalReqs.Add(1)
 
-	// 记录该upstream的失败（使用上游模型名作为key）
+	// 记录 alias+upstream 组合的统计数据
+	statsKey := alias + "|" + upstreamModel
+	if stats, exists := p.modelStats[statsKey]; exists {
+		stats.TotalReqs.Add(1)
+	}
+
+	// 记录该upstream的失败（健康状态按 upstream 维度）
 	if health, exists := p.modelHealths[upstreamModel]; exists {
 		failures := health.FailureCount.Add(1)
 		health.LastFailure.Store(time.Now().Unix())
@@ -558,39 +588,47 @@ func (m *Manager) GetStats() []ProviderStats {
 			rate = float64(success) / float64(total) * 100
 		}
 
-		// 收集模型健康状态
+		// 收集模型健康状态：遍历 ModelMappings，为每个 alias+upstream 组合生成一行
 		p.mu.RLock()
-		modelHealths := make([]ProviderModelHealth, 0, len(p.modelHealths))
+		modelHealths := make([]ProviderModelHealth, 0, len(p.Config.ModelMappings))
 		totalModelFailures := int32(0)
 		allModelsHealthy := true
 
-		for upstreamModel, health := range p.modelHealths {
-			fc := health.FailureCount.Load()
-			totalModelFailures += fc
-			if !health.Healthy.Load() {
-				allModelsHealthy = false
-			}
-			// 收集该upstream对应的所有别名
-			var aliases []string
-			for _, mm := range p.Config.ModelMappings {
-				if mm.Upstream == upstreamModel {
-					aliases = append(aliases, mm.Alias)
+		for _, mm := range p.Config.ModelMappings {
+			// 获取健康状态（按 upstream 维度）
+			var healthy bool = true
+			var fc int32 = 0
+			if health, exists := p.modelHealths[mm.Upstream]; exists {
+				healthy = health.Healthy.Load()
+				fc = health.FailureCount.Load()
+				totalModelFailures += fc
+				if !healthy {
+					allModelsHealthy = false
 				}
 			}
-			// 使用逗号分隔的别名列表
-			aliasStr := ""
-			for i, a := range aliases {
-				if i > 0 {
-					aliasStr += ","
-				}
-				aliasStr += a
+
+			// 获取统计数据（按 alias+upstream 组合）
+			statsKey := mm.Alias + "|" + mm.Upstream
+			var modelTotal, modelSuccess int64 = 0, 0
+			if stats, exists := p.modelStats[statsKey]; exists {
+				modelTotal = stats.TotalReqs.Load()
+				modelSuccess = stats.SuccessReqs.Load()
 			}
+
+			var modelRate float64
+			if modelTotal > 0 {
+				modelRate = float64(modelSuccess) / float64(modelTotal) * 100
+			}
+
 			modelHealths = append(modelHealths, ProviderModelHealth{
 				ProviderName:  p.Config.Name,
-				ModelAlias:    aliasStr,
-				UpstreamModel: upstreamModel,
-				Healthy:       health.Healthy.Load(),
+				ModelAlias:    mm.Alias,
+				UpstreamModel: mm.Upstream,
+				Healthy:       healthy,
 				FailureCount:  fc,
+				TotalReqs:     modelTotal,
+				SuccessReqs:   modelSuccess,
+				SuccessRate:   modelRate,
 			})
 		}
 		p.mu.RUnlock()

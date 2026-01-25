@@ -596,28 +596,29 @@
                             <th>模型别名</th>
                             <th>上游模型</th>
                             <th>状态</th>
+                            <th>成功次数</th>
                             <th>失败次数</th>
                             <th>总请求</th>
                             <th>成功率</th>
                         </tr>
                         </thead>
                         <tbody>
-                        <template v-for="provider in healthData" :key="provider.name">
-                            <tr v-for="(model, idx) in provider.model_healths" :key="provider.name + '-' + idx">
-                                <td>{{ idx === 0 ? provider.name : '' }}</td>
-                                <td>{{ model.model_alias }}</td>
-                                <td>{{ model.upstream_model }}</td>
-                                <td>
-                                            <span class="status-badge"
-                                                  :class="model.healthy ? 'status-healthy' : 'status-unhealthy'">
-                                                {{ model.healthy ? '健康' : '异常' }}
-                                            </span>
-                                </td>
-                                <td>{{ model.failure_count }}</td>
-                                <td>{{ idx === 0 ? provider.total_requests : '' }}</td>
-                                <td>{{ idx === 0 ? provider.success_rate.toFixed(1) + '%' : '' }}</td>
-                            </tr>
-                        </template>
+                        <tr v-for="(model, idx) in sortedModelHealths"
+                            :key="model.provider_name + '-' + model.upstream_model">
+                            <td>{{ model.provider_name }}</td>
+                            <td>{{ model.model_alias }}</td>
+                            <td>{{ model.upstream_model }}</td>
+                            <td>
+                                        <span class="status-badge"
+                                              :class="model.healthy ? 'status-healthy' : 'status-unhealthy'">
+                                            {{ model.healthy ? '健康' : '异常' }}
+                                        </span>
+                            </td>
+                            <td>{{ model.success_requests }}</td>
+                            <td>{{ model.failure_count }}</td>
+                            <td>{{ model.total_requests }}</td>
+                            <td>{{ model.success_rate.toFixed(1) }}%</td>
+                        </tr>
                         </tbody>
                     </table>
                 </div>
@@ -1108,6 +1109,50 @@
                 } catch (e) {
                     alert(e.response?.data?.message || e.message || '清空日志失败');
                 }
+            }
+        },
+        computed: {
+            // 按模型别名分组，成功次数降序排序
+            sortedModelHealths() {
+                // 收集所有模型健康数据
+                const allModels = [];
+                this.healthData.forEach(provider => {
+                    (provider.model_healths || []).forEach(model => {
+                        allModels.push({
+                            ...model,
+                            provider_name: provider.name
+                        });
+                    });
+                });
+
+                // 按模型别名分组，计算每个别名的总成功次数
+                const aliasGroups = {};
+                allModels.forEach(model => {
+                    const alias = model.model_alias;
+                    if (!aliasGroups[alias]) {
+                        aliasGroups[alias] = {
+                            totalSuccess: 0,
+                            models: []
+                        };
+                    }
+                    aliasGroups[alias].totalSuccess += model.success_requests || 0;
+                    aliasGroups[alias].models.push(model);
+                });
+
+                // 按总成功次数降序排序别名组
+                const sortedAliases = Object.keys(aliasGroups).sort((a, b) => {
+                    return aliasGroups[b].totalSuccess - aliasGroups[a].totalSuccess;
+                });
+
+                // 展平结果，同一别名组内的模型也按成功次数降序排序
+                const result = [];
+                sortedAliases.forEach(alias => {
+                    const group = aliasGroups[alias];
+                    group.models.sort((a, b) => (b.success_requests || 0) - (a.success_requests || 0));
+                    result.push(...group.models);
+                });
+
+                return result;
             }
         }
     }).mount('#app');
