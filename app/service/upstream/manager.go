@@ -79,6 +79,8 @@ type ProviderModelHealth struct {
 	TotalReqs     int64   `json:"total_requests"`   // 总请求数
 	SuccessReqs   int64   `json:"success_requests"` // 成功请求数
 	SuccessRate   float64 `json:"success_rate"`     // 成功率(%)
+	Priority      int     `json:"priority"`         // 优先级
+	Weight        int     `json:"weight"`           // 权重
 }
 
 // ProviderStats 供应商统计信息
@@ -628,6 +630,8 @@ func (m *Manager) GetStats() []ProviderStats {
 				TotalReqs:     modelTotal,
 				SuccessReqs:   modelSuccess,
 				SuccessRate:   modelRate,
+				Priority:      mm.Priority,
+				Weight:        mm.Weight,
 			})
 		}
 		p.mu.RUnlock()

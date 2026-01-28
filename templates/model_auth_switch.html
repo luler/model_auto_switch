@@ -697,7 +697,12 @@
                         <div class="form-row">
                             <div class="form-group">
                                 <label>API Key</label>
-                                <input type="password" v-model="provider.api_key" placeholder="sk-xxx">
+                                <div style="display: flex; gap: 8px;">
+                                    <input :type="provider.showApiKey ? 'text' : 'password'" v-model="provider.api_key" placeholder="sk-xxx" style="flex: 1;">
+                                    <button type="button" class="btn btn-secondary btn-sm" @click="provider.showApiKey = !provider.showApiKey" style="white-space: nowrap;">
+                                        {{ provider.showApiKey ? '隐藏' : '查看' }}
+                                    </button>
+                                </div>
                             </div>
                             <div class="form-group">
                                 <label>超时时间(秒)</label>
@@ -929,7 +934,8 @@
                     const data = res.data.data || {};
                     this.providers = (data.providers || []).map(p => ({
                         ...p,
-                        exclude_params_str: (p.exclude_params || []).join(', ')
+                        exclude_params_str: (p.exclude_params || []).join(', '),
+                        showApiKey: false
                     }));
                     // 对模型映射进行排序
                     this.sortAllProviderMappings();
@@ -1013,7 +1019,8 @@
                     priority: 0,
                     timeout: 120,
                     exclude_params_str: '',
-                    model_mappings: []
+                    model_mappings: [],
+                    showApiKey: false
                 });
                 this.showProviderModal = false;
             },
@@ -1143,7 +1150,7 @@
             }
         },
         computed: {
-            // 按模型别名分组，成功次数降序排序
+            // 按别名（自然排序）、优先级（小到大）、权重（大到小）排序
             sortedModelHealths() {
                 // 收集所有模型健康数据
                 const allModels = [];
@@ -1156,34 +1163,22 @@
                     });
                 });
 
-                // 按模型别名分组，计算每个别名的总成功次数
-                const aliasGroups = {};
-                allModels.forEach(model => {
-                    const alias = model.model_alias;
-                    if (!aliasGroups[alias]) {
-                        aliasGroups[alias] = {
-                            totalSuccess: 0,
-                            models: []
-                        };
-                    }
-                    aliasGroups[alias].totalSuccess += model.success_requests || 0;
-                    aliasGroups[alias].models.push(model);
+                // 排序：别名（自然排序）、优先级（小到大）、权重（大到小）
+                return allModels.sort((a, b) => {
+                    // 1. 按别名自然排序
+                    const aliasA = (a.model_alias || '').toLowerCase();
+                    const aliasB = (b.model_alias || '').toLowerCase();
+                    const aliasCompare = aliasA.localeCompare(aliasB, undefined, {numeric: true, sensitivity: 'base'});
+                    if (aliasCompare !== 0) return aliasCompare;
+                    // 2. 按优先级升序（小到大，越小越优先）
+                    const priorityA = a.priority || 0;
+                    const priorityB = b.priority || 0;
+                    if (priorityA !== priorityB) return priorityA - priorityB;
+                    // 3. 按权重降序（大到小）
+                    const weightA = a.weight || 1;
+                    const weightB = b.weight || 1;
+                    return weightB - weightA;
                 });
-
-                // 按总成功次数降序排序别名组
-                const sortedAliases = Object.keys(aliasGroups).sort((a, b) => {
-                    return aliasGroups[b].totalSuccess - aliasGroups[a].totalSuccess;
-                });
-
-                // 展平结果，同一别名组内的模型也按成功次数降序排序
-                const result = [];
-                sortedAliases.forEach(alias => {
-                    const group = aliasGroups[alias];
-                    group.models.sort((a, b) => (b.success_requests || 0) - (a.success_requests || 0));
-                    result.push(...group.models);
-                });
-
-                return result;
             }
         }
     }).mount('#app');
