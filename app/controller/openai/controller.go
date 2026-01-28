@@ -26,40 +26,32 @@ func generateRequestID() string {
 	return hex.EncodeToString(b)
 }
 
-// ManagerGetter 定义获取 Manager 的接口
-type ManagerGetter interface {
+// ConfigGetter 定义动态获取配置的接口
+type ConfigGetter interface {
 	GetManager() *upstream.Manager
+	GetMaxRetries() int
 }
 
 // Controller OpenAI 兼容接口控制器
 type Controller struct {
-	managerGetter ManagerGetter     // 动态获取 manager
-	manager       *upstream.Manager // 静态 manager（备用）
-	maxRetries    int               // 单次请求最大尝试次数
+	configGetter ConfigGetter // 动态获取配置
 }
 
 // NewController 创建控制器
-func NewController(manager *upstream.Manager, maxRetries int) *Controller {
-	if maxRetries <= 0 {
-		maxRetries = 1 // 默认只尝试1次，不重试
-	}
+func NewController(configGetter ConfigGetter) *Controller {
 	return &Controller{
-		manager:    manager,
-		maxRetries: maxRetries,
+		configGetter: configGetter,
 	}
-}
-
-// SetManagerGetter 设置 ManagerGetter（用于动态获取 manager）
-func (c *Controller) SetManagerGetter(getter ManagerGetter) {
-	c.managerGetter = getter
 }
 
 // getManager 获取当前的 manager
 func (c *Controller) getManager() *upstream.Manager {
-	if c.managerGetter != nil {
-		return c.managerGetter.GetManager()
-	}
-	return c.manager
+	return c.configGetter.GetManager()
+}
+
+// getMaxRetries 获取当前的最大重试次数
+func (c *Controller) getMaxRetries() int {
+	return c.configGetter.GetMaxRetries()
 }
 
 // ChatCompletions 处理 /v1/chat/completions 请求
@@ -198,7 +190,7 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 	var triedProviders []string
 
 	// 限制最大尝试次数
-	maxAttempts := c.maxRetries
+	maxAttempts := c.getMaxRetries()
 	if maxAttempts > len(providerModels) {
 		maxAttempts = len(providerModels)
 	}
@@ -265,7 +257,7 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 	var triedProviders []string
 
 	// 限制最大尝试次数
-	maxAttempts := c.maxRetries
+	maxAttempts := c.getMaxRetries()
 	if maxAttempts > len(providerModels) {
 		maxAttempts = len(providerModels)
 	}

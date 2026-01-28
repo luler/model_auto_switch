@@ -21,15 +21,20 @@ type AdminController struct {
 	manager    *upstream.Manager
 	apiKeys    []string
 	configPath string
+	maxRetries int
 	mu         sync.RWMutex
 }
 
 // NewAdminController 创建管理控制器
-func NewAdminController(manager *upstream.Manager, apiKeys []string) *AdminController {
+func NewAdminController(manager *upstream.Manager, apiKeys []string, maxRetries int) *AdminController {
+	if maxRetries <= 0 {
+		maxRetries = 1
+	}
 	return &AdminController{
 		manager:    manager,
 		apiKeys:    apiKeys,
 		configPath: filepath.Join("app", "appconfig", "openai_proxy.yaml"),
+		maxRetries: maxRetries,
 	}
 }
 
@@ -45,6 +50,23 @@ func (c *AdminController) GetManager() *upstream.Manager {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.manager
+}
+
+// SetMaxRetries 设置最大重试次数（用于热重载）
+func (c *AdminController) SetMaxRetries(maxRetries int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if maxRetries <= 0 {
+		maxRetries = 1
+	}
+	c.maxRetries = maxRetries
+}
+
+// GetMaxRetries 获取当前最大重试次数
+func (c *AdminController) GetMaxRetries() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.maxRetries
 }
 
 // SetAPIKeys 设置 API Keys（用于热重载）
@@ -149,7 +171,11 @@ func (c *AdminController) GetConfig(ctx *gin.Context) {
 
 // SaveConfigRequest 保存配置请求
 type SaveConfigRequest struct {
-	Providers []upstream.ProviderConfig `json:"providers"`
+	Providers         []upstream.ProviderConfig `json:"providers"`
+	MaxRetries        *int                      `json:"max_retries,omitempty"`
+	MaxFailures       *int                      `json:"max_failures,omitempty"`
+	RecoveryInterval  *int                      `json:"recovery_interval,omitempty"`
+	HealthCheckPeriod *int                      `json:"health_check_period,omitempty"`
 }
 
 // SaveConfig 保存配置
@@ -166,8 +192,8 @@ func (c *AdminController) SaveConfig(ctx *gin.Context) {
 		return
 	}
 
-	// 保存配置到文件（只更新 providers 部分）
-	if err := c.saveConfig(req.Providers); err != nil {
+	// 保存配置到文件（更新 providers 和全局配置）
+	if err := c.saveConfig(&req); err != nil {
 		response_helper.Fail(ctx, "保存配置失败: "+err.Error())
 		return
 	}
@@ -204,8 +230,8 @@ func (c *AdminController) loadConfig() (*appconfig.OpenAIProxyConfig, error) {
 	return &config, nil
 }
 
-// saveConfig 保存配置到文件（只更新 providers 部分，保留其他字段和注释）
-func (c *AdminController) saveConfig(providers []upstream.ProviderConfig) error {
+// saveConfig 保存配置到文件（更新 providers 和全局配置，保留其他字段和注释）
+func (c *AdminController) saveConfig(req *SaveConfigRequest) error {
 	// 读取原文件内容
 	data, err := os.ReadFile(c.configPath)
 	if err != nil {
@@ -230,8 +256,23 @@ func (c *AdminController) saveConfig(providers []upstream.ProviderConfig) error 
 
 	// 序列化新的 providers
 	var providersNode yaml.Node
-	if err := providersNode.Encode(providers); err != nil {
+	if err := providersNode.Encode(req.Providers); err != nil {
 		return err
+	}
+
+	// 更新或添加配置项的辅助函数
+	updateOrAddField := func(key string, value int) {
+		for i := 0; i < len(mapNode.Content)-1; i += 2 {
+			if mapNode.Content[i].Value == key {
+				mapNode.Content[i+1].Value = fmt.Sprintf("%d", value)
+				return
+			}
+		}
+		// 未找到则添加
+		mapNode.Content = append(mapNode.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: key},
+			&yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprintf("%d", value)},
+		)
 	}
 
 	// 在 map 中找到 providers 键并替换值
@@ -253,6 +294,20 @@ func (c *AdminController) saveConfig(providers []upstream.ProviderConfig) error 
 			Value: "providers",
 		}
 		mapNode.Content = append(mapNode.Content, keyNode, &providersNode)
+	}
+
+	// 更新全局配置参数（如果提供了）
+	if req.MaxRetries != nil {
+		updateOrAddField("max_retries", *req.MaxRetries)
+	}
+	if req.MaxFailures != nil {
+		updateOrAddField("max_failures", *req.MaxFailures)
+	}
+	if req.RecoveryInterval != nil {
+		updateOrAddField("recovery_interval", *req.RecoveryInterval)
+	}
+	if req.HealthCheckPeriod != nil {
+		updateOrAddField("health_check_period", *req.HealthCheckPeriod)
 	}
 
 	// 序列化回 yaml
@@ -354,6 +409,11 @@ func (c *AdminController) reloadManager(config *appconfig.OpenAIProxyConfig) err
 
 	// 更新 Manager
 	c.SetManager(newManager)
+
+	// 更新 MaxRetries
+	if config.MaxRetries > 0 {
+		c.SetMaxRetries(config.MaxRetries)
+	}
 
 	// 停止旧的 Manager
 	if oldManager != nil {

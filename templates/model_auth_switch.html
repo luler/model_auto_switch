@@ -637,41 +637,36 @@
                     </div>
                 </div>
 
-                <!-- 全局配置参数（只读） -->
+                <p class="success-msg" v-if="saveSuccess">{{ saveSuccess }}</p>
+                <p class="error-msg" v-if="saveError">{{ saveError }}</p>
+
+                <!-- 全局配置参数 -->
                 <div class="global-config-card"
                      style="background: #f8f9fa; border-radius: 12px; padding: 20px; margin-bottom: 20px; border: 2px solid #e0e0e0;">
-                    <h4 style="margin-bottom: 15px; color: #333;">全局配置参数 <span
-                            style="font-size: 12px; color: #999; font-weight: normal;">(只读，需修改配置文件)</span></h4>
+                    <h4 style="margin-bottom: 15px; color: #333;">全局配置参数</h4>
                     <div style="display: flex; flex-wrap: wrap; gap: 20px;">
                         <div style="flex: 1; min-width: 200px;">
                             <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">单次请求最大尝试次数</label>
-                            <div style="background: #fff; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; color: #333;">
-                                {{ globalConfig.max_retries }}
-                            </div>
+                            <input type="number" v-model.number="globalConfig.max_retries" min="1"
+                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
                         </div>
                         <div style="flex: 1; min-width: 200px;">
                             <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">连续失败标记不健康次数</label>
-                            <div style="background: #fff; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; color: #333;">
-                                {{ globalConfig.max_failures }}
-                            </div>
+                            <input type="number" v-model.number="globalConfig.max_failures" min="1"
+                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
                         </div>
                         <div style="flex: 1; min-width: 200px;">
                             <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">恢复检查间隔（秒）</label>
-                            <div style="background: #fff; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; color: #333;">
-                                {{ globalConfig.recovery_interval }}
-                            </div>
+                            <input type="number" v-model.number="globalConfig.recovery_interval" min="1"
+                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
                         </div>
                         <div style="flex: 1; min-width: 200px;">
                             <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">健康检查周期（秒）</label>
-                            <div style="background: #fff; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; color: #333;">
-                                {{ globalConfig.health_check_period }}
-                            </div>
+                            <input type="number" v-model.number="globalConfig.health_check_period" min="1"
+                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
                         </div>
                     </div>
                 </div>
-
-                <p class="success-msg" v-if="saveSuccess">{{ saveSuccess }}</p>
-                <p class="error-msg" v-if="saveError">{{ saveError }}</p>
 
                 <div class="loading" v-if="configLoading">加载中</div>
                 <div v-else>
@@ -698,8 +693,11 @@
                             <div class="form-group">
                                 <label>API Key</label>
                                 <div style="display: flex; gap: 8px;">
-                                    <input :type="provider.showApiKey ? 'text' : 'password'" v-model="provider.api_key" placeholder="sk-xxx" style="flex: 1;">
-                                    <button type="button" class="btn btn-secondary btn-sm" @click="provider.showApiKey = !provider.showApiKey" style="white-space: nowrap;">
+                                    <input :type="provider.showApiKey ? 'text' : 'password'" v-model="provider.api_key"
+                                           placeholder="sk-xxx" style="flex: 1;">
+                                    <button type="button" class="btn btn-secondary btn-sm"
+                                            @click="provider.showApiKey = !provider.showApiKey"
+                                            style="white-space: nowrap;">
                                         {{ provider.showApiKey ? '隐藏' : '查看' }}
                                     </button>
                                 </div>
@@ -979,7 +977,11 @@
                     });
 
                     const res = await axios.post('/api/admin/config', {
-                        providers: providers
+                        providers: providers,
+                        max_retries: this.globalConfig.max_retries,
+                        max_failures: this.globalConfig.max_failures,
+                        recovery_interval: this.globalConfig.recovery_interval,
+                        health_check_period: this.globalConfig.health_check_period
                     }, {
                         headers: {'X-API-Key': this.authCode}
                     });
