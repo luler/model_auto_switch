@@ -5,11 +5,23 @@ import (
 	"gin_base/app"
 	"gin_base/bin"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 func init() {
+	// 设置时区
+	tz := os.Getenv("TZ")
+	if tz == "" {
+		tz = "Asia/Shanghai"
+	}
+	if loc, err := time.LoadLocation(tz); err == nil {
+		time.Local = loc
+	} else {
+		// 如果加载失败，使用UTC+8
+		time.Local = time.FixedZone("CST", 8*3600)
+	}
 	//项目初始化
 	app.InitApp(
 		app.InitTypeBase,
