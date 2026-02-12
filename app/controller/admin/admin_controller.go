@@ -20,19 +20,21 @@ import (
 type AdminController struct {
 	manager    *upstream.Manager
 	apiKeys    []string
+	adminKey   string
 	configPath string
 	maxRetries int
 	mu         sync.RWMutex
 }
 
 // NewAdminController 创建管理控制器
-func NewAdminController(manager *upstream.Manager, apiKeys []string, maxRetries int) *AdminController {
+func NewAdminController(manager *upstream.Manager, apiKeys []string, adminKey string, maxRetries int) *AdminController {
 	if maxRetries <= 0 {
 		maxRetries = 1
 	}
 	return &AdminController{
 		manager:    manager,
 		apiKeys:    apiKeys,
+		adminKey:   adminKey,
 		configPath: filepath.Join("app", "appconfig", "openai_proxy.yaml"),
 		maxRetries: maxRetries,
 	}
@@ -83,6 +85,20 @@ func (c *AdminController) GetAPIKeys() []string {
 	return c.apiKeys
 }
 
+// SetAdminKey 设置管理密钥（用于热重载）
+func (c *AdminController) SetAdminKey(adminKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.adminKey = adminKey
+}
+
+// GetAdminKey 获取当前管理密钥
+func (c *AdminController) GetAdminKey() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.adminKey
+}
+
 // LoginRequest 登录请求
 type LoginRequest struct {
 	APIKey string `json:"api_key"`
@@ -96,26 +112,19 @@ func (c *AdminController) Login(ctx *gin.Context) {
 		return
 	}
 
-	apiKeys := c.GetAPIKeys()
-	for _, key := range apiKeys {
-		if key == req.APIKey {
-			response_helper.Success(ctx, "登录成功")
-			return
-		}
+	adminKey := c.GetAdminKey()
+	if adminKey != "" && req.APIKey == adminKey {
+		response_helper.Success(ctx, "登录成功")
+		return
 	}
 
-	response_helper.Common(ctx, 401, "API Key 无效")
+	response_helper.Common(ctx, 401, "管理密钥无效")
 }
 
-// ValidateAPIKey 验证 API Key（从 header 获取）
+// ValidateAPIKey 验证管理密钥（从 header 获取）
 func (c *AdminController) ValidateAPIKey(apiKey string) bool {
-	apiKeys := c.GetAPIKeys()
-	for _, key := range apiKeys {
-		if key == apiKey {
-			return true
-		}
-	}
-	return false
+	adminKey := c.GetAdminKey()
+	return adminKey != "" && apiKey == adminKey
 }
 
 // GetHealth 获取健康状态
@@ -413,6 +422,11 @@ func (c *AdminController) reloadManager(config *appconfig.OpenAIProxyConfig) err
 	// 更新 MaxRetries
 	if config.MaxRetries > 0 {
 		c.SetMaxRetries(config.MaxRetries)
+	}
+
+	// 更新 AdminKey
+	if config.AdminKey != "" {
+		c.SetAdminKey(config.AdminKey)
 	}
 
 	// 停止旧的 Manager

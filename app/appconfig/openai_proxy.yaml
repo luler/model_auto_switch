@@ -5,6 +5,9 @@ api_keys:
   - "sk-your-custom-api-key"
   # - "sk-another-key"
 
+# 管理后台登录密钥（独立于 api_keys，避免暴露客户端密钥）
+admin_key: "your-admin-key"
+
 # 请求重试配置
 max_retries: 3           # 单次请求最大尝试次数（默认1不重试，设置>1启用故障转移）
 

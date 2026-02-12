@@ -20,30 +20,47 @@
 编辑 `app/appconfig/openai_proxy.yaml`：
 
 ```yaml
-# 对外提供的 API Keys
+# OpenAI 代理配置
+
+# 对外提供的 API Keys（客户端使用这些 key 访问本服务）
 api_keys:
   - "sk-your-custom-api-key"
+  # - "sk-another-key"
+
+# 管理后台登录密钥（独立于 api_keys，避免暴露客户端密钥）
+admin_key: "your-admin-key"
 
 # 请求重试配置
-max_retries: 3  # 最大尝试次数（默认1不重试，设置>1启用故障转移）
+max_retries: 3           # 单次请求最大尝试次数（默认1不重试，设置>1启用故障转移）
 
 # 供应商管理器配置
-max_failures: 3          # 连续失败多少次后标记供应商为不健康
+max_failures: 3          # 全局连续失败多少次后标记模型为不健康（可被单个模型配置覆盖）
 recovery_interval: 30    # 恢复检查间隔（秒）
-health_check_period: 60  # 健康检查周期（秒）
+health_check_period: 3600  # 健康检查周期（秒）
 
-# 上游供应商配置
+# 上游供应商配置列表
 providers:
-  - name: "provider-a"
-    base_url: "https://api.provider-a.com"
-    api_key: "sk-xxx"
-    weight: 1
-    priority: 1
-    timeout: 120
+  # 供应商1: OpenAI 官方
+  - name: "openai"
+    base_url: "https://api.openai.com"
+    api_key: "sk-xxxx"
+    weight: 1            # 供应商权重（用于负载均衡）
+    priority: 1          # 供应商优先级（数字越小优先级越高）
+    timeout: 120         # 超时时间（秒）
+    # 过滤上游不支持的参数
+    exclude_params:
+      - thinking
+      - verbosity
     model_mappings:
-      - upstream: "gpt-4"
-        alias: "my-gpt4"
-        priority: 1
+      # 设置 alias，对外暴露 alias 名称
+      - upstream: "gpt-5"
+        alias: "gpt-5"
+        priority: 0   # 模型优先级（数字越小优先级越高 0-N）
+        weight: 1
+        # max_failures: 5  # 可选：该模型的连续失败阈值，不填则使用全局配置
+      - upstream: "gpt-4o"
+        alias: "gpt-5"
+        priority: 0
         weight: 1
 ```
 

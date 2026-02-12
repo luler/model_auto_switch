@@ -541,8 +541,8 @@
 
         <!-- 授权验证 -->
         <div class="auth-card" v-if="!isAuthed">
-            <h2>请输入API Key</h2>
-            <input type="password" v-model="authCode" placeholder="请输入API Key" @keyup.enter="doAuth">
+            <h2>请输入管理密钥</h2>
+            <input type="password" v-model="authCode" placeholder="请输入管理密钥" @keyup.enter="doAuth">
             <button @click="doAuth">验证</button>
             <p class="error-msg" v-if="authError">{{ authError }}</p>
         </div>
@@ -863,7 +863,7 @@
         methods: {
             async doAuth() {
                 if (!this.authCode) {
-                    this.authError = '请输入API Key';
+                    this.authError = '请输入管理密钥';
                     return;
                 }
                 this.authError = '';

@@ -7,6 +7,9 @@ type OpenAIProxyConfig struct {
 	// 对外提供的 API Keys（客户端使用这些 key 访问本服务）
 	APIKeys []string `mapstructure:"api_keys" yaml:"api_keys"`
 
+	// 管理后台登录密钥（独立于 api_keys，用于管理页面登录）
+	AdminKey string `mapstructure:"admin_key" yaml:"admin_key"`
+
 	// 上游供应商配置
 	Providers []upstream.ProviderConfig `mapstructure:"providers" yaml:"providers"`
 

@@ -25,9 +25,9 @@ func InitRouter(e *gin.Engine) {
 }
 
 // InitOpenAIRouter 初始化 OpenAI 兼容路由
-func InitOpenAIRouter(e *gin.Engine, manager *upstream.Manager, apiKeys []string, maxRetries int) *admin.AdminController {
+func InitOpenAIRouter(e *gin.Engine, manager *upstream.Manager, apiKeys []string, adminKey string, maxRetries int) *admin.AdminController {
 	// 创建 Admin 控制器
-	adminCtrl := admin.NewAdminController(manager, apiKeys, maxRetries)
+	adminCtrl := admin.NewAdminController(manager, apiKeys, adminKey, maxRetries)
 
 	// 创建 OpenAI 控制器，并设置 ConfigGetter
 	ctrl := openai.NewController(adminCtrl)
