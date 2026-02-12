@@ -292,13 +292,14 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		reader := bufio.NewReader(resp.Body)
 		var bufferedLines [][]byte
 		var streamErr error
+		hasValidContent := false
+		hasDone := false
 
 		// 最多预读取3行进行错误检测
 		for j := 0; j < 3; j++ {
 			line, err := reader.ReadBytes('\n')
 			if err != nil {
 				if err == io.EOF && len(line) > 0 {
-					// EOF但有数据，保存并检测
 					bufferedLines = append(bufferedLines, line)
 					if detectErr := detectStreamError(line); detectErr != nil {
 						streamErr = detectErr
@@ -314,8 +315,15 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 				break
 			}
 
+			// 记录是否遇到 [DONE]，流已结束，停止预读
+			if bytes.Equal(bytes.TrimSpace(line), []byte("data: [DONE]")) {
+				hasDone = true
+				break
+			}
+
 			// 如果遇到有实际内容的chunk（非空choices），说明流正常，停止预读
 			if isValidStreamChunk(line) {
+				hasValidContent = true
 				break
 			}
 		}
@@ -323,6 +331,15 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		if streamErr != nil {
 			resp.Body.Close()
 			lastErr = streamErr
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, lastErr))
+			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			continue
+		}
+
+		// 检测空流（HTTP 200但没有任何实际内容）
+		if hasDone && !hasValidContent {
+			resp.Body.Close()
+			lastErr = fmt.Errorf("empty stream: no content generated")
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, lastErr))
 			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
