@@ -217,6 +217,11 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		if err != nil {
 			cancel()
 			lastErr = err
+			// 客户端取消不算上游失败
+			if ctx.Request.Context().Err() != nil {
+				log_helper.Info(fmt.Sprintf("[%s] %s #%d completions %s client disconnected", reqID, aliasModel, i+1, providerName))
+				break
+			}
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: %v", reqID, aliasModel, i+1, providerName, err))
 			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
@@ -228,6 +233,11 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 
 		if err != nil {
 			lastErr = err
+			// 客户端取消不算上游失败
+			if ctx.Request.Context().Err() != nil {
+				log_helper.Info(fmt.Sprintf("[%s] %s #%d completions %s client disconnected", reqID, aliasModel, i+1, providerName))
+				break
+			}
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: %v", reqID, aliasModel, i+1, providerName, err))
 			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
@@ -250,6 +260,11 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		}
 		log_helper.Info(fmt.Sprintf("[%s] %s %s completions -> %s/%s", reqID, aliasModel, attemptInfo, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		ctx.Data(resp.StatusCode, "application/json", respBody)
+		return
+	}
+
+	// 客户端已断开，无需返回错误
+	if ctx.Request.Context().Err() != nil {
 		return
 	}
 
@@ -287,6 +302,11 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		resp, err := pm.Provider.ProxyStreamRequest(ctx.Request.Context(), "/v1/chat/completions", reqBody, headers)
 		if err != nil {
 			lastErr = err
+			// 客户端取消不算上游失败
+			if ctx.Request.Context().Err() != nil {
+				log_helper.Info(fmt.Sprintf("[%s] %s #%d stream %s client disconnected", reqID, aliasModel, i+1, providerName))
+				break
+			}
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, err))
 			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
 			continue
