@@ -732,6 +732,7 @@
                                 <input type="number" class="priority" v-model.number="model.priority"
                                        placeholder="优先级">
                                 <input type="number" class="weight" v-model.number="model.weight" placeholder="权重">
+                                <button class="btn btn-success btn-sm" @click="addModel(pIdx, mIdx)">添加</button>
                                 <button class="btn btn-danger btn-sm" @click="removeModel(pIdx, mIdx)">删除</button>
                             </div>
                             <button class="add-btn" @click="addModel(pIdx)">+ 添加模型</button>
@@ -1031,16 +1032,21 @@
                     this.providers.splice(idx, 1);
                 }
             },
-            addModel(pIdx) {
+            addModel(pIdx, afterIdx) {
                 if (!this.providers[pIdx].model_mappings) {
                     this.providers[pIdx].model_mappings = [];
                 }
-                this.providers[pIdx].model_mappings.push({
+                const newModel = {
                     upstream: '',
                     alias: '',
                     priority: 0,
                     weight: 1
-                });
+                };
+                if (afterIdx !== undefined) {
+                    this.providers[pIdx].model_mappings.splice(afterIdx + 1, 0, newModel);
+                } else {
+                    this.providers[pIdx].model_mappings.push(newModel);
+                }
             },
             removeModel(pIdx, mIdx) {
                 this.providers[pIdx].model_mappings.splice(mIdx, 1);
