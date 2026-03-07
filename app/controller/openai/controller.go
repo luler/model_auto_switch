@@ -196,6 +196,13 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 	}
 
 	for i := 0; i < maxAttempts; i++ {
+		// 检查客户端是否已断开连接，避免无意义的重试
+		if ctx.Request.Context().Err() != nil {
+			lastErr = ctx.Request.Context().Err()
+			log_helper.Info(fmt.Sprintf("[%s] %s client disconnected, stopping retries", reqID, aliasModel))
+			break
+		}
+
 		pm := providerModels[i]
 		providerName := fmt.Sprintf("%s(%s)", pm.Provider.Config.Name, pm.Mapping.Upstream)
 		triedProviders = append(triedProviders, providerName)
@@ -263,6 +270,13 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 	}
 
 	for i := 0; i < maxAttempts; i++ {
+		// 检查客户端是否已断开连接，避免无意义的重试
+		if ctx.Request.Context().Err() != nil {
+			lastErr = ctx.Request.Context().Err()
+			log_helper.Info(fmt.Sprintf("[%s] %s client disconnected, stopping retries", reqID, aliasModel))
+			break
+		}
+
 		pm := providerModels[i]
 		providerName := fmt.Sprintf("%s(%s)", pm.Provider.Config.Name, pm.Mapping.Upstream)
 		triedProviders = append(triedProviders, providerName)
