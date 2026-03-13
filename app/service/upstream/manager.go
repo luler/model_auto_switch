@@ -506,7 +506,7 @@ func (m *Manager) checkAndRecover() {
 // tryRecoverModel 尝试恢复upstream模型
 func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 	// 第一步：先检查 /v1/models 接口
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(p.Config.Timeout)*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", p.Config.BaseURL+"/v1/models", nil)
@@ -529,7 +529,7 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 	}
 
 	// 第二步：使用简单的 chat/completions 调用来验证模型可用性
-	testCtx, testCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	testCtx, testCancel := context.WithTimeout(context.Background(), time.Duration(p.Config.Timeout)*time.Second)
 	defer testCancel()
 
 	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`, upstreamModel))
