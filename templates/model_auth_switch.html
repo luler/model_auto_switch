@@ -243,6 +243,41 @@
             overflow-x: auto;
         }
 
+        .metric-pair {
+            display: inline-flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 76px;
+        }
+
+        .metric-line {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+            line-height: 1.2;
+        }
+
+        .metric-label {
+            font-size: 11px;
+            color: #8a94a6;
+            white-space: nowrap;
+        }
+
+        .metric-value {
+            font-size: 14px;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .metric-line.metric-secondary .metric-label,
+        .metric-line.metric-secondary .metric-value {
+            color: #94a3b8;
+        }
+
+        .metric-line.metric-secondary .metric-value {
+            font-weight: 500;
+        }
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -572,6 +607,19 @@
                 font-size: 13px;
             }
 
+            .metric-pair {
+                min-width: 64px;
+                gap: 2px;
+            }
+
+            .metric-label {
+                font-size: 10px;
+            }
+
+            .metric-value {
+                font-size: 13px;
+            }
+
             .form-row {
                 flex-direction: column;
             }
@@ -685,10 +733,54 @@
                                             {{ model.healthy ? '健康' : '异常' }}
                                         </span>
                             </td>
-                            <td><span style="display:inline-block;width:2.5em;text-align:right;">今日:</span> {{ model.today_success_requests || 0 }}<br><span style="display:inline-block;width:2.5em;text-align:right;">总共:</span> {{ model.success_requests || 0 }}</td>
-                            <td><span style="display:inline-block;width:2.5em;text-align:right;">今日:</span> {{ model.today_failure_count || 0 }}<br><span style="display:inline-block;width:2.5em;text-align:right;">总共:</span> {{ model.failure_count || 0 }}</td>
-                            <td><span style="display:inline-block;width:2.5em;text-align:right;">今日:</span> {{ model.today_total_requests || 0 }}<br><span style="display:inline-block;width:2.5em;text-align:right;">总共:</span> {{ model.total_requests || 0 }}</td>
-                            <td><span style="display:inline-block;width:2.5em;text-align:right;">今日:</span> {{ (model.today_success_rate || 0).toFixed(1) }}%<br><span style="display:inline-block;width:2.5em;text-align:right;">总共:</span> {{ (model.success_rate || 0).toFixed(1) }}%</td>
+                            <td>
+                                <div class="metric-pair">
+                                    <div class="metric-line">
+                                        <span class="metric-label">今日</span>
+                                        <span class="metric-value">{{ model.today_success_requests || 0 }}</span>
+                                    </div>
+                                    <div class="metric-line metric-secondary">
+                                        <span class="metric-label">历史</span>
+                                        <span class="metric-value">{{ model.success_requests || 0 }}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="metric-pair">
+                                    <div class="metric-line">
+                                        <span class="metric-label">今日</span>
+                                        <span class="metric-value">{{ model.today_failure_count || 0 }}</span>
+                                    </div>
+                                    <div class="metric-line metric-secondary">
+                                        <span class="metric-label">历史</span>
+                                        <span class="metric-value">{{ model.failure_count || 0 }}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="metric-pair">
+                                    <div class="metric-line">
+                                        <span class="metric-label">今日</span>
+                                        <span class="metric-value">{{ model.today_total_requests || 0 }}</span>
+                                    </div>
+                                    <div class="metric-line metric-secondary">
+                                        <span class="metric-label">历史</span>
+                                        <span class="metric-value">{{ model.total_requests || 0 }}</span>
+                                    </div>
+                                </div>
+                            </td>
+                            <td>
+                                <div class="metric-pair">
+                                    <div class="metric-line">
+                                        <span class="metric-label">今日</span>
+                                        <span class="metric-value">{{ (model.today_success_rate || 0).toFixed(1) }}%</span>
+                                    </div>
+                                    <div class="metric-line metric-secondary">
+                                        <span class="metric-label">历史</span>
+                                        <span class="metric-value">{{ (model.success_rate || 0).toFixed(1) }}%</span>
+                                    </div>
+                                </div>
+                            </td>
                         </tr>
                         </tbody>
                     </table>
