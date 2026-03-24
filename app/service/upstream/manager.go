@@ -926,6 +926,23 @@ func (m *Manager) GetStats() []ProviderStats {
 	return stats
 }
 
+// ResetStats 清空所有模型的成功失败统计数据
+func (m *Manager) ResetStats() {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, p := range m.providers {
+		p.mu.RLock()
+		for _, stats := range p.modelStats {
+			stats.TodaySuccess.Store(0)
+			stats.TodayFailure.Store(0)
+			stats.TotalSuccess.Store(0)
+			stats.TotalFailure.Store(0)
+		}
+		p.mu.RUnlock()
+	}
+}
+
 // GetAllModels 获取所有可用模型（返回别名）
 func (m *Manager) GetAllModels() []string {
 	m.mu.RLock()

@@ -516,8 +516,60 @@
         }
 
         @media (max-width: 768px) {
+            body {
+                padding: 10px;
+            }
+
+            .header h1 {
+                font-size: 1.5rem;
+                padding-right: 60px;
+            }
+
+            .header p {
+                font-size: 13px;
+                padding-right: 60px;
+            }
+
+            .auth-card {
+                margin: 30px auto;
+                padding: 24px 16px;
+            }
+
+            .main-content {
+                padding: 16px 12px;
+            }
+
+            .tabs {
+                flex-wrap: wrap;
+                gap: 6px;
+            }
+
+            .tab-btn {
+                padding: 8px 14px;
+                font-size: 13px;
+            }
+
+            .toolbar {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .toolbar h3 {
+                width: 100%;
+            }
+
             .stats {
                 flex-direction: column;
+                gap: 10px;
+            }
+
+            .stat-card .number {
+                font-size: 1.5rem;
+            }
+
+            th, td {
+                padding: 10px 8px;
+                font-size: 13px;
             }
 
             .form-row {
@@ -526,6 +578,20 @@
 
             .model-item {
                 flex-wrap: wrap;
+            }
+
+            .model-item input {
+                min-width: 0;
+                width: 100%;
+            }
+
+            .btn {
+                padding: 8px 14px;
+                font-size: 13px;
+            }
+
+            .refresh-btn {
+                padding: 8px 14px;
             }
         }
     </style>
@@ -566,9 +632,14 @@
             <div v-show="activeTab === 'health'">
                 <div class="toolbar">
                     <h3>模型健康状态</h3>
-                    <button class="btn btn-secondary refresh-btn" @click="fetchHealth">
-                        <span>刷新</span>
-                    </button>
+                    <div style="display:inline-flex;gap:8px;">
+                        <button class="btn btn-secondary refresh-btn" @click="fetchHealth">
+                            <span>刷新</span>
+                        </button>
+                        <button class="btn btn-danger refresh-btn" @click="confirmResetStats">
+                            <span>清空统计</span>
+                        </button>
+                    </div>
                 </div>
 
                 <!-- 统计卡片 -->
@@ -614,10 +685,10 @@
                                             {{ model.healthy ? '健康' : '异常' }}
                                         </span>
                             </td>
-                            <td>今日: {{ model.today_success_requests || 0 }}<br>总: {{ model.success_requests || 0 }}</td>
-                            <td>今日: {{ model.today_failure_count || 0 }}<br>总: {{ model.failure_count || 0 }}</td>
-                            <td>今日: {{ model.today_total_requests || 0 }}<br>总: {{ model.total_requests || 0 }}</td>
-                            <td>今日: {{ (model.today_success_rate || 0).toFixed(1) }}%<br>总: {{ (model.success_rate || 0).toFixed(1) }}%</td>
+                            <td><span style="display:inline-block;width:2.5em;text-align:right;">今日:</span> {{ model.today_success_requests || 0 }}<br><span style="display:inline-block;width:2.5em;text-align:right;">总共:</span> {{ model.success_requests || 0 }}</td>
+                            <td><span style="display:inline-block;width:2.5em;text-align:right;">今日:</span> {{ model.today_failure_count || 0 }}<br><span style="display:inline-block;width:2.5em;text-align:right;">总共:</span> {{ model.failure_count || 0 }}</td>
+                            <td><span style="display:inline-block;width:2.5em;text-align:right;">今日:</span> {{ model.today_total_requests || 0 }}<br><span style="display:inline-block;width:2.5em;text-align:right;">总共:</span> {{ model.total_requests || 0 }}</td>
+                            <td><span style="display:inline-block;width:2.5em;text-align:right;">今日:</span> {{ (model.today_success_rate || 0).toFixed(1) }}%<br><span style="display:inline-block;width:2.5em;text-align:right;">总共:</span> {{ (model.success_rate || 0).toFixed(1) }}%</td>
                         </tr>
                         </tbody>
                     </table>
@@ -1154,6 +1225,22 @@
                     this.logsContent = '';
                 } catch (e) {
                     alert(e.response?.data?.message || e.message || '清空日志失败');
+                }
+            },
+            async confirmResetStats() {
+                if (!confirm('确定要清空所有模型的成功/失败统计数据吗？此操作不可恢复。')) {
+                    return;
+                }
+                try {
+                    const res = await axios.post('/api/admin/health/reset-stats', {}, {
+                        headers: {'X-API-Key': this.authCode}
+                    });
+                    if (res.data.code !== 200) {
+                        throw new Error(res.data.message || '清空失败');
+                    }
+                    await this.fetchHealth();
+                } catch (e) {
+                    alert(e.response?.data?.message || e.message || '清空统计失败');
                 }
             }
         },

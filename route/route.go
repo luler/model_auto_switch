@@ -42,6 +42,7 @@ func InitOpenAIRouter(e *gin.Engine, manager *upstream.Manager, apiKeys []string
 	adminAPI := e.Group("/api/admin")
 	adminAPI.POST("/login", middleware.IpRateLimit(10.0/3600, 10), adminCtrl.Login)
 	adminAPI.GET("/health", adminCtrl.GetHealth)
+	adminAPI.POST("/health/reset-stats", adminCtrl.ResetStats)
 	adminAPI.GET("/config", adminCtrl.GetConfig)
 	adminAPI.POST("/config", adminCtrl.SaveConfig)
 	adminAPI.GET("/logs", adminCtrl.GetLogs)

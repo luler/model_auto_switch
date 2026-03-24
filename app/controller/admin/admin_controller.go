@@ -127,6 +127,25 @@ func (c *AdminController) ValidateAPIKey(apiKey string) bool {
 	return adminKey != "" && apiKey == adminKey
 }
 
+// ResetStats 清空成功失败统计
+func (c *AdminController) ResetStats(ctx *gin.Context) {
+	apiKey := ctx.GetHeader("X-API-Key")
+	if !c.ValidateAPIKey(apiKey) {
+		response_helper.Common(ctx, 401, "未授权")
+		return
+	}
+
+	manager := c.GetManager()
+	if manager == nil {
+		response_helper.Fail(ctx, "服务未初始化")
+		return
+	}
+
+	manager.ResetStats()
+	manager.SaveStatsToFile()
+	response_helper.Success(ctx, "统计已清空")
+}
+
 // GetHealth 获取健康状态
 func (c *AdminController) GetHealth(ctx *gin.Context) {
 	apiKey := ctx.GetHeader("X-API-Key")
