@@ -246,35 +246,42 @@
         .metric-pair {
             display: inline-flex;
             flex-direction: column;
-            gap: 4px;
-            min-width: 76px;
+            gap: 6px;
+            min-width: 88px;
         }
 
         .metric-line {
-            display: flex;
+            display: grid;
+            grid-template-columns: 28px auto;
             align-items: baseline;
-            gap: 6px;
-            line-height: 1.2;
+            column-gap: 8px;
+            line-height: 1.15;
         }
 
         .metric-label {
             font-size: 11px;
-            color: #8a94a6;
+            color: #7c8aa0;
             white-space: nowrap;
+            letter-spacing: 0.02em;
         }
 
         .metric-value {
-            font-size: 14px;
-            font-weight: 600;
-            color: #2d3748;
+            font-size: 15px;
+            font-weight: 700;
+            color: #1f2937;
+        }
+
+        .metric-line.metric-secondary {
+            margin-top: -1px;
         }
 
         .metric-line.metric-secondary .metric-label,
         .metric-line.metric-secondary .metric-value {
-            color: #94a3b8;
+            color: #a0aec0;
         }
 
         .metric-line.metric-secondary .metric-value {
+            font-size: 13px;
             font-weight: 500;
         }
 
@@ -608,8 +615,13 @@
             }
 
             .metric-pair {
-                min-width: 64px;
-                gap: 2px;
+                min-width: 76px;
+                gap: 3px;
+            }
+
+            .metric-line {
+                grid-template-columns: 24px auto;
+                column-gap: 6px;
             }
 
             .metric-label {
@@ -618,6 +630,10 @@
 
             .metric-value {
                 font-size: 13px;
+            }
+
+            .metric-line.metric-secondary .metric-value {
+                font-size: 12px;
             }
 
             .form-row {
