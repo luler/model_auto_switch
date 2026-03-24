@@ -614,10 +614,10 @@
                                             {{ model.healthy ? '健康' : '异常' }}
                                         </span>
                             </td>
-                            <td>{{ model.success_requests }}</td>
-                            <td>{{ model.failure_count }}</td>
-                            <td>{{ model.total_requests }}</td>
-                            <td>{{ model.success_rate.toFixed(1) }}%</td>
+                            <td>今日: {{ model.today_success_requests || 0 }}<br>总: {{ model.success_requests || 0 }}</td>
+                            <td>今日: {{ model.today_failure_count || 0 }}<br>总: {{ model.failure_count || 0 }}</td>
+                            <td>今日: {{ model.today_total_requests || 0 }}<br>总: {{ model.total_requests || 0 }}</td>
+                            <td>今日: {{ (model.today_success_rate || 0).toFixed(1) }}%<br>总: {{ (model.success_rate || 0).toFixed(1) }}%</td>
                         </tr>
                         </tbody>
                     </table>

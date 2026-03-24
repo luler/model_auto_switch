@@ -3,11 +3,15 @@ package upstream
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"gin_base/app/helper/log_helper"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,8 +56,28 @@ type ModelHealth struct {
 
 // ModelStats 模型统计数据（按 alias+upstream 组合存储）
 type ModelStats struct {
-	TotalReqs   atomic.Int64 // 总请求数
-	SuccessReqs atomic.Int64 // 成功请求数
+	TodaySuccess atomic.Int64 // 今日成功请求数
+	TodayFailure atomic.Int64 // 今日失败请求数
+	TotalSuccess atomic.Int64 // 总成功请求数
+	TotalFailure atomic.Int64 // 总失败请求数
+}
+
+// ModelStatsSnapshot 模型统计快照
+type ModelStatsSnapshot struct {
+	ProviderName  string `json:"provider_name"`
+	ModelAlias    string `json:"model_alias"`
+	UpstreamModel string `json:"upstream_model"`
+	TodaySuccess  int64  `json:"today_success"`
+	TodayFailure  int64  `json:"today_failure"`
+	TotalSuccess  int64  `json:"total_success"`
+	TotalFailure  int64  `json:"total_failure"`
+}
+
+// StatsSnapshotFile 模型统计持久化文件
+type StatsSnapshotFile struct {
+	Date    string               `json:"date"`
+	SavedAt string               `json:"saved_at"`
+	Models  []ModelStatsSnapshot `json:"models"`
 }
 
 // Provider 上游供应商
@@ -69,18 +93,28 @@ type Provider struct {
 	modelStats   map[string]*ModelStats  // "alias|upstream" -> ModelStats (统计数据)
 }
 
+const (
+	defaultStatsPersistPath     = "runtime/model_stats.json"
+	defaultStatsPersistInterval = 10 * time.Second
+	statsDateLayout             = "2006-01-02"
+)
+
 // ProviderModelHealth 供应商模型健康信息
 type ProviderModelHealth struct {
-	ProviderName  string  `json:"provider_name"`
-	ModelAlias    string  `json:"model_alias"`    // 模型别名
-	UpstreamModel string  `json:"upstream_model"` // 上游模型名
-	Healthy       bool    `json:"healthy"`
-	FailureCount  int32   `json:"failure_count"`
-	TotalReqs     int64   `json:"total_requests"`   // 总请求数
-	SuccessReqs   int64   `json:"success_requests"` // 成功请求数
-	SuccessRate   float64 `json:"success_rate"`     // 成功率(%)
-	Priority      int     `json:"priority"`         // 优先级
-	Weight        int     `json:"weight"`           // 权重
+	ProviderName      string  `json:"provider_name"`
+	ModelAlias        string  `json:"model_alias"`    // 模型别名
+	UpstreamModel     string  `json:"upstream_model"` // 上游模型名
+	Healthy           bool    `json:"healthy"`
+	TodayFailureCount int32   `json:"today_failure_count"` // 今日失败请求数
+	FailureCount      int32   `json:"failure_count"`
+	TodaySuccessReqs  int64   `json:"today_success_requests"` // 今日成功请求数
+	TodayTotalReqs    int64   `json:"today_total_requests"`   // 今日总请求数
+	TodaySuccessRate  float64 `json:"today_success_rate"`     // 今日成功率(%)
+	TotalReqs         int64   `json:"total_requests"`         // 总请求数
+	SuccessReqs       int64   `json:"success_requests"`       // 成功请求数
+	SuccessRate       float64 `json:"success_rate"`           // 成功率(%)
+	Priority          int     `json:"priority"`               // 优先级
+	Weight            int     `json:"weight"`                 // 权重
 }
 
 // ProviderStats 供应商统计信息
@@ -104,9 +138,17 @@ type Manager struct {
 	maxFailures       int           // 最大连续失败次数，超过后标记为不健康
 	recoveryInterval  time.Duration // 恢复检查间隔
 	healthCheckPeriod time.Duration // 健康检查周期
+	statsPersistPath  string        // 模型统计持久化文件路径
+	statsPersistEvery time.Duration // 模型统计持久化周期
+	currentStatsDate  atomic.Value  // 当前统计日期（YYYY-MM-DD）
+	dailyStatsMu      sync.RWMutex
 
 	// 停止信号
-	stopChan chan struct{}
+	stopChan  chan struct{}
+	stopOnce  sync.Once
+	startOnce sync.Once
+	workerWg  sync.WaitGroup
+	saveMutex sync.Mutex
 }
 
 // ManagerConfig 管理器配置
@@ -123,8 +165,11 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 		maxFailures:       mgrConfig.MaxFailures,
 		recoveryInterval:  mgrConfig.RecoveryInterval,
 		healthCheckPeriod: mgrConfig.HealthCheckPeriod,
+		statsPersistPath:  defaultStatsPersistPath,
+		statsPersistEvery: defaultStatsPersistInterval,
 		stopChan:          make(chan struct{}),
 	}
+	m.currentStatsDate.Store(currentStatsDate())
 
 	for _, cfg := range configs {
 		if cfg.Timeout <= 0 {
@@ -203,7 +248,7 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 	}
 
 	// 启动后台健康检查
-	go m.startHealthCheck()
+	m.StartBackgroundWorkers()
 
 	return m
 }
@@ -383,14 +428,15 @@ func (m *Manager) supportsModel(p *Provider, model string) bool {
 
 // RecordSuccess 记录成功请求
 func (m *Manager) RecordSuccess(p *Provider, alias string, upstreamModel string) {
+	m.resetDailyCountersIfNeeded()
 	p.totalReqs.Add(1)
 	p.successReqs.Add(1)
 
 	// 记录 alias+upstream 组合的统计数据
-	statsKey := alias + "|" + upstreamModel
-	if stats, exists := p.modelStats[statsKey]; exists {
-		stats.TotalReqs.Add(1)
-		stats.SuccessReqs.Add(1)
+	key := statsKey(alias, upstreamModel)
+	if stats, exists := p.modelStats[key]; exists {
+		stats.TodaySuccess.Add(1)
+		stats.TotalSuccess.Add(1)
 	}
 
 	// 重置该upstream的失败计数（健康状态按 upstream 维度）
@@ -405,12 +451,14 @@ func (m *Manager) RecordSuccess(p *Provider, alias string, upstreamModel string)
 
 // RecordFailure 记录失败请求
 func (m *Manager) RecordFailure(p *Provider, alias string, upstreamModel string) {
+	m.resetDailyCountersIfNeeded()
 	p.totalReqs.Add(1)
 
 	// 记录 alias+upstream 组合的统计数据
-	statsKey := alias + "|" + upstreamModel
-	if stats, exists := p.modelStats[statsKey]; exists {
-		stats.TotalReqs.Add(1)
+	key := statsKey(alias, upstreamModel)
+	if stats, exists := p.modelStats[key]; exists {
+		stats.TodayFailure.Add(1)
+		stats.TotalFailure.Add(1)
 	}
 
 	// 记录该upstream的失败（健康状态按 upstream 维度）
@@ -425,8 +473,217 @@ func (m *Manager) RecordFailure(p *Provider, alias string, upstreamModel string)
 	}
 }
 
+// statsKey 获取模型统计key
+func statsKey(alias string, upstreamModel string) string {
+	return alias + "|" + upstreamModel
+}
+
+// currentStatsDate 获取当前统计日期
+func currentStatsDate() string {
+	return time.Now().Format(statsDateLayout)
+}
+
+// currentDate 获取当前缓存统计日期
+func (m *Manager) currentDate() string {
+	if value := m.currentStatsDate.Load(); value != nil {
+		if date, ok := value.(string); ok && date != "" {
+			return date
+		}
+	}
+	date := currentStatsDate()
+	m.currentStatsDate.Store(date)
+	return date
+}
+
+// StartBackgroundWorkers 启动后台任务
+func (m *Manager) StartBackgroundWorkers() {
+	m.startOnce.Do(func() {
+		m.workerWg.Add(1)
+		go m.startHealthCheck()
+
+		m.workerWg.Add(1)
+		go m.startStatsPersistence()
+	})
+}
+
+// resetDailyCountersIfNeeded 跨天时重置今日统计
+func (m *Manager) resetDailyCountersIfNeeded() {
+	currentDate := currentStatsDate()
+
+	m.dailyStatsMu.RLock()
+	if m.currentDate() == currentDate {
+		m.dailyStatsMu.RUnlock()
+		return
+	}
+	m.dailyStatsMu.RUnlock()
+
+	m.dailyStatsMu.Lock()
+	defer m.dailyStatsMu.Unlock()
+
+	if m.currentDate() == currentDate {
+		return
+	}
+
+	m.mu.RLock()
+	providers := append([]*Provider(nil), m.providers...)
+	m.mu.RUnlock()
+
+	for _, p := range providers {
+		p.mu.Lock()
+		for _, stats := range p.modelStats {
+			stats.TodaySuccess.Store(0)
+			stats.TodayFailure.Store(0)
+		}
+		p.mu.Unlock()
+	}
+
+	m.currentStatsDate.Store(currentDate)
+}
+
+// buildStatsSnapshot 构建当前配置模型统计快照
+func (m *Manager) buildStatsSnapshot() StatsSnapshotFile {
+	m.resetDailyCountersIfNeeded()
+
+	m.mu.RLock()
+	providers := append([]*Provider(nil), m.providers...)
+	m.mu.RUnlock()
+
+	snapshot := StatsSnapshotFile{
+		Date:    m.currentDate(),
+		SavedAt: time.Now().Format(time.RFC3339),
+		Models:  make([]ModelStatsSnapshot, 0),
+	}
+
+	for _, p := range providers {
+		p.mu.RLock()
+		for _, mm := range p.Config.ModelMappings {
+			key := statsKey(mm.Alias, mm.Upstream)
+			stats, exists := p.modelStats[key]
+			if !exists {
+				continue
+			}
+			snapshot.Models = append(snapshot.Models, ModelStatsSnapshot{
+				ProviderName:  p.Config.Name,
+				ModelAlias:    mm.Alias,
+				UpstreamModel: mm.Upstream,
+				TodaySuccess:  stats.TodaySuccess.Load(),
+				TodayFailure:  stats.TodayFailure.Load(),
+				TotalSuccess:  stats.TotalSuccess.Load(),
+				TotalFailure:  stats.TotalFailure.Load(),
+			})
+		}
+		p.mu.RUnlock()
+	}
+
+	return snapshot
+}
+
+// ExportStatsSnapshot 导出模型统计快照
+func (m *Manager) ExportStatsSnapshot() StatsSnapshotFile {
+	return m.buildStatsSnapshot()
+}
+
+// ImportStatsSnapshot 导入模型统计快照，仅恢复当前配置内的模型
+func (m *Manager) ImportStatsSnapshot(snapshot StatsSnapshotFile) {
+	m.resetDailyCountersIfNeeded()
+	currentDate := currentStatsDate()
+	restoreToday := snapshot.Date == currentDate
+
+	allowedProviders := make(map[string]*Provider, len(m.providers))
+	m.mu.RLock()
+	for _, p := range m.providers {
+		allowedProviders[p.Config.Name] = p
+	}
+	m.mu.RUnlock()
+
+	for _, item := range snapshot.Models {
+		p, exists := allowedProviders[item.ProviderName]
+		if !exists {
+			continue
+		}
+
+		key := statsKey(item.ModelAlias, item.UpstreamModel)
+		p.mu.RLock()
+		stats, exists := p.modelStats[key]
+		p.mu.RUnlock()
+		if !exists {
+			continue
+		}
+
+		stats.TotalSuccess.Store(item.TotalSuccess)
+		stats.TotalFailure.Store(item.TotalFailure)
+		if restoreToday {
+			stats.TodaySuccess.Store(item.TodaySuccess)
+			stats.TodayFailure.Store(item.TodayFailure)
+		} else {
+			stats.TodaySuccess.Store(0)
+			stats.TodayFailure.Store(0)
+		}
+	}
+
+	m.currentStatsDate.Store(currentDate)
+}
+
+// LoadStatsFromFile 从JSON文件恢复模型统计
+func (m *Manager) LoadStatsFromFile() error {
+	data, err := os.ReadFile(m.statsPersistPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	var snapshot StatsSnapshotFile
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return err
+	}
+
+	m.ImportStatsSnapshot(snapshot)
+	return nil
+}
+
+// SaveStatsToFile 将模型统计写入JSON文件
+func (m *Manager) SaveStatsToFile() error {
+	m.saveMutex.Lock()
+	defer m.saveMutex.Unlock()
+
+	snapshot := m.buildStatsSnapshot()
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	dir := filepath.Dir(m.statsPersistPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+
+	return os.WriteFile(m.statsPersistPath, data, 0644)
+}
+
+// startStatsPersistence 启动模型统计持久化
+func (m *Manager) startStatsPersistence() {
+	defer m.workerWg.Done()
+
+	ticker := time.NewTicker(m.statsPersistEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-m.stopChan:
+			return
+		case <-ticker.C:
+			if err := m.SaveStatsToFile(); err != nil {
+				log_helper.Warning(fmt.Sprintf("Save model stats failed: %v", err))
+			}
+		}
+	}
+}
+
 // startHealthCheck 启动健康检查
 func (m *Manager) startHealthCheck() {
+	defer m.workerWg.Done()
 	ticker := time.NewTicker(m.healthCheckPeriod)
 	defer ticker.Stop()
 
@@ -563,7 +820,13 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 
 // Stop 停止管理器
 func (m *Manager) Stop() {
-	close(m.stopChan)
+	m.stopOnce.Do(func() {
+		close(m.stopChan)
+		m.workerWg.Wait()
+		if err := m.SaveStatsToFile(); err != nil {
+			log_helper.Warning(fmt.Sprintf("Final save model stats failed: %v", err))
+		}
+	})
 }
 
 // GetRoundRobinCounter 获取当前轮询计数器值
@@ -606,11 +869,21 @@ func (m *Manager) GetStats() []ProviderStats {
 			}
 
 			// 获取统计数据（按 alias+upstream 组合）
-			statsKey := mm.Alias + "|" + mm.Upstream
-			var modelTotal, modelSuccess int64 = 0, 0
-			if stats, exists := p.modelStats[statsKey]; exists {
-				modelTotal = stats.TotalReqs.Load()
-				modelSuccess = stats.SuccessReqs.Load()
+			key := statsKey(mm.Alias, mm.Upstream)
+			var modelTodaySuccess, modelTodayFailure, modelTodayTotal int64
+			var modelTotal, modelSuccess, modelFailure int64
+			if stats, exists := p.modelStats[key]; exists {
+				modelTodaySuccess = stats.TodaySuccess.Load()
+				modelTodayFailure = stats.TodayFailure.Load()
+				modelTodayTotal = modelTodaySuccess + modelTodayFailure
+				modelSuccess = stats.TotalSuccess.Load()
+				modelFailure = stats.TotalFailure.Load()
+				modelTotal = modelSuccess + modelFailure
+			}
+
+			var modelTodayRate float64
+			if modelTodayTotal > 0 {
+				modelTodayRate = float64(modelTodaySuccess) / float64(modelTodayTotal) * 100
 			}
 
 			var modelRate float64
@@ -618,20 +891,21 @@ func (m *Manager) GetStats() []ProviderStats {
 				modelRate = float64(modelSuccess) / float64(modelTotal) * 100
 			}
 
-			// 累计失败次数 = 总请求 - 成功次数
-			modelFailure := modelTotal - modelSuccess
-
 			modelHealths = append(modelHealths, ProviderModelHealth{
-				ProviderName:  p.Config.Name,
-				ModelAlias:    mm.Alias,
-				UpstreamModel: mm.Upstream,
-				Healthy:       healthy,
-				FailureCount:  int32(modelFailure),
-				TotalReqs:     modelTotal,
-				SuccessReqs:   modelSuccess,
-				SuccessRate:   modelRate,
-				Priority:      mm.Priority,
-				Weight:        mm.Weight,
+				ProviderName:      p.Config.Name,
+				ModelAlias:        mm.Alias,
+				UpstreamModel:     mm.Upstream,
+				Healthy:           healthy,
+				TodayFailureCount: int32(modelTodayFailure),
+				FailureCount:      int32(modelFailure),
+				TodaySuccessReqs:  modelTodaySuccess,
+				TodayTotalReqs:    modelTodayTotal,
+				TodaySuccessRate:  modelTodayRate,
+				TotalReqs:         modelTotal,
+				SuccessReqs:       modelSuccess,
+				SuccessRate:       modelRate,
+				Priority:          mm.Priority,
+				Weight:            mm.Weight,
 			})
 		}
 		p.mu.RUnlock()

@@ -123,6 +123,10 @@ func initOpenAIProxy(engine *gin.Engine) *upstream.Manager {
 	}
 
 	manager := upstream.NewManager(config.Providers, mgrConfig)
+	if err := manager.LoadStatsFromFile(); err != nil {
+		logrus.Warnf("Failed to load model stats snapshot: %v", err)
+	}
+	manager.StartBackgroundWorkers()
 
 	// 初始化路由（忽略返回的 adminCtrl，因为它会在内部保持对 manager 的引用）
 	_ = route.InitOpenAIRouter(engine, manager, config.APIKeys, config.AdminKey, config.MaxRetries)
