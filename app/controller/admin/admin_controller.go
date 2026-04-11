@@ -400,12 +400,14 @@ func (c *AdminController) ClearLogs(ctx *gin.Context) {
 func (c *AdminController) reloadManager(config *appconfig.OpenAIProxyConfig) error {
 	oldManager := c.GetManager()
 
-	// 保存旧的轮询计数器值和模型统计
+	// 保存旧的轮询计数器值、模型统计和健康状态
 	var oldCounter uint64
 	var oldSnapshot upstream.StatsSnapshotFile
+	var oldHealthSnapshot upstream.HealthSnapshotFile
 	if oldManager != nil {
 		oldCounter = oldManager.GetRoundRobinCounter()
 		oldSnapshot = oldManager.ExportStatsSnapshot()
+		oldHealthSnapshot = oldManager.ExportHealthSnapshot()
 	}
 
 	// 创建新的管理器配置
@@ -432,10 +434,11 @@ func (c *AdminController) reloadManager(config *appconfig.OpenAIProxyConfig) err
 	// 创建新的 Manager
 	newManager := upstream.NewManager(config.Providers, mgrConfig)
 
-	// 恢复轮询计数器值和模型统计（保持负载均衡状态和统计状态）
+	// 恢复轮询计数器值、模型统计和健康状态（保持负载均衡状态和运行时状态）
 	if oldManager != nil {
 		newManager.SetRoundRobinCounter(oldCounter)
 		newManager.ImportStatsSnapshot(oldSnapshot)
+		newManager.ImportHealthSnapshot(oldHealthSnapshot)
 	}
 	newManager.StartBackgroundWorkers()
 

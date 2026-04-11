@@ -73,11 +73,27 @@ type ModelStatsSnapshot struct {
 	TotalFailure  int64  `json:"total_failure"`
 }
 
+// ModelHealthSnapshot 模型健康状态快照
+type ModelHealthSnapshot struct {
+	ProviderName  string `json:"provider_name"`
+	UpstreamModel string `json:"upstream_model"`
+	Healthy       bool   `json:"healthy"`
+	FailureCount  int32  `json:"failure_count"`
+	LastFailure   int64  `json:"last_failure"`
+	LastCheckTime int64  `json:"last_check_time"`
+}
+
 // StatsSnapshotFile 模型统计持久化文件
 type StatsSnapshotFile struct {
 	Date    string               `json:"date"`
 	SavedAt string               `json:"saved_at"`
 	Models  []ModelStatsSnapshot `json:"models"`
+}
+
+// HealthSnapshotFile 模型健康状态快照
+type HealthSnapshotFile struct {
+	SavedAt string                `json:"saved_at"`
+	Models  []ModelHealthSnapshot `json:"models"`
 }
 
 // Provider 上游供应商
@@ -583,6 +599,35 @@ func (m *Manager) ExportStatsSnapshot() StatsSnapshotFile {
 	return m.buildStatsSnapshot()
 }
 
+// ExportHealthSnapshot 导出模型健康状态快照
+func (m *Manager) ExportHealthSnapshot() HealthSnapshotFile {
+	m.mu.RLock()
+	providers := append([]*Provider(nil), m.providers...)
+	m.mu.RUnlock()
+
+	snapshot := HealthSnapshotFile{
+		SavedAt: time.Now().Format(time.RFC3339),
+		Models:  make([]ModelHealthSnapshot, 0),
+	}
+
+	for _, p := range providers {
+		p.mu.RLock()
+		for upstreamModel, health := range p.modelHealths {
+			snapshot.Models = append(snapshot.Models, ModelHealthSnapshot{
+				ProviderName:  p.Config.Name,
+				UpstreamModel: upstreamModel,
+				Healthy:       health.Healthy.Load(),
+				FailureCount:  health.FailureCount.Load(),
+				LastFailure:   health.LastFailure.Load(),
+				LastCheckTime: health.LastCheckTime.Load(),
+			})
+		}
+		p.mu.RUnlock()
+	}
+
+	return snapshot
+}
+
 // ImportStatsSnapshot 导入模型统计快照，仅恢复当前配置内的模型
 func (m *Manager) ImportStatsSnapshot(snapshot StatsSnapshotFile) {
 	m.resetDailyCountersIfNeeded()
@@ -622,6 +667,35 @@ func (m *Manager) ImportStatsSnapshot(snapshot StatsSnapshotFile) {
 	}
 
 	m.currentStatsDate.Store(currentDate)
+}
+
+// ImportHealthSnapshot 导入模型健康状态快照，仅恢复当前配置内的模型
+func (m *Manager) ImportHealthSnapshot(snapshot HealthSnapshotFile) {
+	allowedProviders := make(map[string]*Provider, len(m.providers))
+	m.mu.RLock()
+	for _, p := range m.providers {
+		allowedProviders[p.Config.Name] = p
+	}
+	m.mu.RUnlock()
+
+	for _, item := range snapshot.Models {
+		p, exists := allowedProviders[item.ProviderName]
+		if !exists {
+			continue
+		}
+
+		p.mu.RLock()
+		health, exists := p.modelHealths[item.UpstreamModel]
+		p.mu.RUnlock()
+		if !exists {
+			continue
+		}
+
+		health.Healthy.Store(item.Healthy)
+		health.FailureCount.Store(item.FailureCount)
+		health.LastFailure.Store(item.LastFailure)
+		health.LastCheckTime.Store(item.LastCheckTime)
+	}
 }
 
 // LoadStatsFromFile 从JSON文件恢复模型统计
