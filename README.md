@@ -35,7 +35,9 @@ max_retries: 3           # 单次请求最大尝试次数（默认1不重试，�
 
 # 供应商管理器配置
 max_failures: 3          # 全局连续失败多少次后标记模型为不健康（可被单个模型配置覆盖）
-recovery_interval: 30    # 恢复检查间隔（秒）
+recovery_interval: 30    # 恢复检查基础间隔（秒）
+recovery_backoff_factor: 2.0  # 恢复检查退避倍数，设为1禁用退避
+recovery_max_interval: 3600   # 恢复检查最大间隔（秒）
 health_check_period: 3600  # 健康检查周期（秒）
 
 # 上游供应商配置列表
@@ -90,9 +92,11 @@ curl http://localhost:8080/v1/chat/completions \
 |-----------------------|----------|-----|-----------------------------------|
 | `api_keys`            | []string | -   | 对外提供的 API Keys（客户端使用这些 key 访问本服务） |
 | `max_retries`         | int      | 1   | 单次请求最大尝试次数（1=不重试，>1=启用故障转移）       |
-| `max_failures`        | int      | 3   | 供应商连续失败多少次后标记为不健康                 |
-| `recovery_interval`   | int      | 30  | 不健康供应商的恢复检查间隔（秒）                  |
-| `health_check_period` | int      | 60  | 健康检查周期（秒）                         |
+| `max_failures`              | int      | 3    | 模型连续失败多少次后标记为不健康，可被单个模型配置覆盖                    |
+| `recovery_interval`         | int      | 30   | 不健康模型的恢复检查基础间隔（秒）                              |
+| `recovery_backoff_factor`   | float    | 2.0  | 恢复检查退避倍数；`1` 表示禁用退避，`>1` 表示每次恢复探测失败后按倍数拉长间隔 |
+| `recovery_max_interval`     | int      | 3600 | 恢复检查退避后的最大间隔（秒），避免间隔无限增大                       |
+| `health_check_period`       | int      | 60   | 后台健康检查任务运行周期（秒）；实际是否探测还会受恢复检查间隔和退避限制          |
 
 ### 供应商配置 (providers)
 
@@ -109,14 +113,47 @@ curl http://localhost:8080/v1/chat/completions \
 
 ### 模型映射配置 (model_mappings)
 
-| 字段         | 类型     | 默认值       | 说明               |
-|------------|--------|-----------|------------------|
-| `upstream` | string | -         | 上游实际模型名（必填）      |
-| `alias`    | string | =upstream | 对外暴露的别名          |
-| `weight`   | int    | 1         | 模型权重（用于负载均衡）     |
-| `priority` | int    | 0         | 模型优先级（数值越小优先级越高） |
+| 字段             | 类型     | 默认值       | 说明                  |
+|----------------|--------|-----------|---------------------|
+| `upstream`     | string | -         | 上游实际模型名（必填）         |
+| `alias`        | string | =upstream | 对外暴露的别名             |
+| `weight`       | int    | 1         | 模型权重（用于负载均衡）        |
+| `priority`     | int    | 0         | 模型优先级（数值越小优先级越高）   |
+| `max_failures` | int    | 全局配置      | 该模型连续失败多少次后标记为不健康 |
 
-## 负载均衡
+## 健康检查与恢复退避
+
+### 工作方式
+
+- 每个 upstream 模型都有独立的健康状态和恢复退避次数，不同模型互不影响。
+- 请求失败次数达到 `max_failures` 后，该 upstream 模型会被标记为不健康。
+- 后台健康检查任务按 `health_check_period` 周期运行，但不健康模型是否真正发起恢复探测，还会受 `recovery_interval` 和退避策略限制。
+- 恢复探测成功后，该模型的失败计数和退避次数都会重置。
+
+### 退避公式
+
+```text
+effective_interval = min(recovery_interval × recovery_backoff_factor ^ recovery_attempts, recovery_max_interval)
+```
+
+示例：
+
+```yaml
+recovery_interval: 30
+recovery_backoff_factor: 2.0
+recovery_max_interval: 3600
+```
+
+持续恢复失败时，同一个模型的恢复探测间隔大致为：30 秒、60 秒、120 秒、240 秒……直到最大 3600 秒。
+
+### 参数说明
+
+- `recovery_backoff_factor: 1`：禁用退避，始终按 `recovery_interval` 固定间隔探测。
+- `recovery_backoff_factor: 2.0`：默认推荐值，每次恢复失败后间隔翻倍。
+- `recovery_max_interval`：退避上限，防止长期失败模型被无限延后检查。
+- `health_check_period`：健康检查循环的运行周期；如果它大于当前模型的有效恢复间隔，实际探测频率会受它限制。
+
+
 
 ### 工作原理
 
@@ -237,6 +274,8 @@ max_retries: 3
 # 供应商管理器配置
 max_failures: 3
 recovery_interval: 30
+recovery_backoff_factor: 2.0
+recovery_max_interval: 3600
 health_check_period: 60
 
 # 上游供应商配置

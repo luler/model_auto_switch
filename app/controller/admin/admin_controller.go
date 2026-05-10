@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -227,6 +228,11 @@ func (c *AdminController) SaveConfig(ctx *gin.Context) {
 		return
 	}
 
+	if err := validateSaveConfigRequest(&req); err != nil {
+		response_helper.Fail(ctx, err.Error())
+		return
+	}
+
 	// 保存配置到文件（更新 providers 和全局配置）
 	if err := c.saveConfig(&req); err != nil {
 		response_helper.Fail(ctx, "保存配置失败: "+err.Error())
@@ -248,6 +254,61 @@ func (c *AdminController) SaveConfig(ctx *gin.Context) {
 
 	log_helper.Info("配置已更新并重载")
 	response_helper.Success(ctx, "保存成功")
+}
+
+func validateSaveConfigRequest(req *SaveConfigRequest) error {
+	if req.MaxRetries != nil && *req.MaxRetries < 1 {
+		return fmt.Errorf("单次请求最大尝试次数必须大于等于 1")
+	}
+	if req.MaxFailures != nil && *req.MaxFailures < 1 {
+		return fmt.Errorf("连续失败标记不健康次数必须大于等于 1")
+	}
+	if req.RecoveryInterval != nil && *req.RecoveryInterval < 1 {
+		return fmt.Errorf("恢复检查间隔必须大于等于 1 秒")
+	}
+	if req.RecoveryBackoffFactor != nil && *req.RecoveryBackoffFactor < 1 {
+		return fmt.Errorf("恢复检查退避倍数必须大于等于 1")
+	}
+	if req.RecoveryMaxInterval != nil && *req.RecoveryMaxInterval < 1 {
+		return fmt.Errorf("恢复检查最大间隔必须大于等于 1 秒")
+	}
+	if req.HealthCheckPeriod != nil && *req.HealthCheckPeriod < 1 {
+		return fmt.Errorf("健康检查周期必须大于等于 1 秒")
+	}
+
+	for pIdx, provider := range req.Providers {
+		providerLabel := strings.TrimSpace(provider.Name)
+		if providerLabel == "" {
+			providerLabel = fmt.Sprintf("第 %d 个供应商", pIdx+1)
+		} else {
+			providerLabel = fmt.Sprintf("供应商 %s", providerLabel)
+		}
+		if strings.TrimSpace(provider.Name) == "" {
+			return fmt.Errorf("第 %d 个供应商名称不能为空", pIdx+1)
+		}
+		if strings.TrimSpace(provider.BaseURL) == "" {
+			return fmt.Errorf("%s 的 Base URL 不能为空", providerLabel)
+		}
+		if strings.TrimSpace(provider.APIKey) == "" {
+			return fmt.Errorf("%s 的 API Key 不能为空", providerLabel)
+		}
+		if provider.Weight < 1 {
+			return fmt.Errorf("%s 的权重必须大于等于 1", providerLabel)
+		}
+		if provider.Timeout < 1 {
+			return fmt.Errorf("%s 的超时时间必须大于等于 1 秒", providerLabel)
+		}
+		for mIdx, mapping := range provider.ModelMappings {
+			if strings.TrimSpace(mapping.Upstream) == "" {
+				return fmt.Errorf("%s 的第 %d 行模型映射：上游模型名不能为空", providerLabel, mIdx+1)
+			}
+			if mapping.Weight < 1 {
+				return fmt.Errorf("%s 的第 %d 行模型映射：权重必须大于等于 1", providerLabel, mIdx+1)
+			}
+		}
+	}
+
+	return nil
 }
 
 // loadConfig 加载配置文件

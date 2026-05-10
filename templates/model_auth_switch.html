@@ -500,6 +500,58 @@
             gap: 8px;
         }
 
+        .floating-actions {
+            position: fixed;
+            left: 50%;
+            bottom: 24px;
+            transform: translateX(-50%);
+            z-index: 900;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            padding: 12px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.94);
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+            backdrop-filter: blur(10px);
+        }
+
+        .floating-actions .btn {
+            position: relative;
+            min-width: 120px;
+            border-radius: 999px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+        }
+
+        .floating-actions .btn-secondary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .floating-actions .btn-secondary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .unsaved-dot {
+            position: absolute;
+            top: 6px;
+            right: 10px;
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: #ff3b30;
+            box-shadow: 0 0 0 2px #fff;
+        }
+
+        .providers-tab,
+        .health-tab {
+            padding-bottom: 96px;
+        }
+
         .modal {
             position: fixed;
             top: 0;
@@ -693,17 +745,9 @@
             </div>
 
             <!-- 健康状态Tab -->
-            <div v-show="activeTab === 'health'">
+            <div v-show="activeTab === 'health'" class="health-tab">
                 <div class="toolbar">
                     <h3>模型健康状态</h3>
-                    <div style="display:inline-flex;gap:8px;">
-                        <button class="btn btn-secondary refresh-btn" @click="fetchHealth">
-                            <span>刷新</span>
-                        </button>
-                        <button class="btn btn-danger refresh-btn" @click="confirmResetStats">
-                            <span>清空统计</span>
-                        </button>
-                    </div>
                 </div>
 
                 <!-- 统计卡片 -->
@@ -801,19 +845,21 @@
                         </tbody>
                     </table>
                 </div>
+
+                <div class="floating-actions">
+                    <button class="btn btn-secondary refresh-btn" @click="fetchHealth">
+                        <span>刷新</span>
+                    </button>
+                    <button class="btn btn-danger refresh-btn" @click="confirmResetStats">
+                        <span>清空统计</span>
+                    </button>
+                </div>
             </div>
 
             <!-- 供应商管理Tab -->
-            <div v-show="activeTab === 'providers'">
+            <div v-show="activeTab === 'providers'" class="providers-tab">
                 <div class="toolbar">
                     <h3>供应商配置</h3>
-                    <div>
-                        <button class="btn btn-primary" @click="showAddProvider">+ 添加供应商</button>
-                        <button class="btn btn-success" style="margin-left: 10px;" @click="saveConfig"
-                                :disabled="saving">
-                            {{ saving ? '保存中...' : '保存配置' }}
-                        </button>
-                    </div>
                 </div>
 
                 <p class="success-msg" v-if="saveSuccess">{{ saveSuccess }}</p>
@@ -934,6 +980,14 @@
                         <p>暂无供应商配置</p>
                     </div>
                 </div>
+
+                <div class="floating-actions">
+                    <button class="btn btn-primary" @click="showAddProvider">+ 添加供应商</button>
+                    <button class="btn btn-success" @click="saveConfig" :disabled="saving">
+                        {{ saving ? '保存中...' : '保存配置' }}
+                        <span v-if="hasUnsavedConfig" class="unsaved-dot"></span>
+                    </button>
+                </div>
             </div>
 
             <!-- 实时日志Tab -->
@@ -1025,6 +1079,7 @@
                 saving: false,
                 saveSuccess: '',
                 saveError: '',
+                configSnapshot: '',
 
                 // 添加供应商弹窗
                 showProviderModal: false,
@@ -1139,6 +1194,7 @@
                         recovery_max_interval: data.recovery_max_interval || 0,
                         health_check_period: data.health_check_period || 0
                     };
+                    this.configSnapshot = this.currentConfigSnapshot();
                 } catch (e) {
                     console.error('获取配置失败:', e);
                 } finally {
@@ -1194,10 +1250,12 @@
 
                     // 对模型映射进行排序
                     this.sortAllProviderMappings();
+                    this.configSnapshot = this.currentConfigSnapshot();
                     // 刷新健康状态
                     this.fetchHealth();
                 } catch (e) {
                     this.saveError = e.response?.data?.message || e.message || '保存失败';
+                    alert(this.saveError);
                 } finally {
                     this.saving = false;
                 }
@@ -1205,6 +1263,27 @@
             showAddProvider() {
                 this.newProvider = {name: '', base_url: '', api_key: ''};
                 this.showProviderModal = true;
+            },
+            currentConfigSnapshot() {
+                const normalizedProviders = this.providers.map(p => ({
+                    name: p.name || '',
+                    base_url: p.base_url || '',
+                    api_key: p.api_key || '',
+                    weight: p.weight || 1,
+                    priority: p.priority || 0,
+                    timeout: p.timeout || 120,
+                    exclude_params_str: p.exclude_params_str || '',
+                    model_mappings: (p.model_mappings || []).map(m => ({
+                        upstream: m.upstream || '',
+                        alias: m.alias || '',
+                        priority: m.priority || 0,
+                        weight: m.weight || 1
+                    }))
+                }));
+                return JSON.stringify({
+                    providers: normalizedProviders,
+                    globalConfig: this.globalConfig
+                });
             },
             addProvider() {
                 if (!this.newProvider.name) {
@@ -1371,6 +1450,9 @@
             }
         },
         computed: {
+            hasUnsavedConfig() {
+                return this.activeTab === 'providers' && !!this.configSnapshot && this.currentConfigSnapshot() !== this.configSnapshot;
+            },
             // 按别名（自然排序）、优先级（小到大）、权重（大到小）排序
             sortedModelHealths() {
                 // 收集所有模型健康数据
