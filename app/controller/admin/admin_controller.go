@@ -9,6 +9,7 @@ import (
 	"gin_base/app/service/upstream"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -166,11 +167,13 @@ func (c *AdminController) GetHealth(ctx *gin.Context) {
 
 // ConfigResponse 配置响应
 type ConfigResponse struct {
-	Providers         []upstream.ProviderConfig `json:"providers"`
-	MaxRetries        int                       `json:"max_retries"`
-	MaxFailures       int                       `json:"max_failures"`
-	RecoveryInterval  int                       `json:"recovery_interval"`
-	HealthCheckPeriod int                       `json:"health_check_period"`
+	Providers             []upstream.ProviderConfig `json:"providers"`
+	MaxRetries            int                       `json:"max_retries"`
+	MaxFailures           int                       `json:"max_failures"`
+	RecoveryInterval      int                       `json:"recovery_interval"`
+	RecoveryBackoffFactor float64                   `json:"recovery_backoff_factor"`
+	RecoveryMaxInterval   int                       `json:"recovery_max_interval"`
+	HealthCheckPeriod     int                       `json:"health_check_period"`
 }
 
 // GetConfig 获取配置
@@ -189,21 +192,25 @@ func (c *AdminController) GetConfig(ctx *gin.Context) {
 	}
 
 	response_helper.Success(ctx, "获取成功", ConfigResponse{
-		Providers:         config.Providers,
-		MaxRetries:        config.MaxRetries,
-		MaxFailures:       config.MaxFailures,
-		RecoveryInterval:  config.RecoveryInterval,
-		HealthCheckPeriod: config.HealthCheckPeriod,
+		Providers:             config.Providers,
+		MaxRetries:            config.MaxRetries,
+		MaxFailures:           config.MaxFailures,
+		RecoveryInterval:      config.RecoveryInterval,
+		RecoveryBackoffFactor: config.RecoveryBackoffFactor,
+		RecoveryMaxInterval:   config.RecoveryMaxInterval,
+		HealthCheckPeriod:     config.HealthCheckPeriod,
 	})
 }
 
 // SaveConfigRequest 保存配置请求
 type SaveConfigRequest struct {
-	Providers         []upstream.ProviderConfig `json:"providers"`
-	MaxRetries        *int                      `json:"max_retries,omitempty"`
-	MaxFailures       *int                      `json:"max_failures,omitempty"`
-	RecoveryInterval  *int                      `json:"recovery_interval,omitempty"`
-	HealthCheckPeriod *int                      `json:"health_check_period,omitempty"`
+	Providers             []upstream.ProviderConfig `json:"providers"`
+	MaxRetries            *int                      `json:"max_retries,omitempty"`
+	MaxFailures           *int                      `json:"max_failures,omitempty"`
+	RecoveryInterval      *int                      `json:"recovery_interval,omitempty"`
+	RecoveryBackoffFactor *float64                  `json:"recovery_backoff_factor,omitempty"`
+	RecoveryMaxInterval   *int                      `json:"recovery_max_interval,omitempty"`
+	HealthCheckPeriod     *int                      `json:"health_check_period,omitempty"`
 }
 
 // SaveConfig 保存配置
@@ -303,6 +310,19 @@ func (c *AdminController) saveConfig(req *SaveConfigRequest) error {
 		)
 	}
 
+	updateOrAddFieldString := func(key string, value string) {
+		for i := 0; i < len(mapNode.Content)-1; i += 2 {
+			if mapNode.Content[i].Value == key {
+				mapNode.Content[i+1].Value = value
+				return
+			}
+		}
+		mapNode.Content = append(mapNode.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: key},
+			&yaml.Node{Kind: yaml.ScalarNode, Value: value},
+		)
+	}
+
 	// 在 map 中找到 providers 键并替换值
 	found := false
 	for i := 0; i < len(mapNode.Content)-1; i += 2 {
@@ -333,6 +353,12 @@ func (c *AdminController) saveConfig(req *SaveConfigRequest) error {
 	}
 	if req.RecoveryInterval != nil {
 		updateOrAddField("recovery_interval", *req.RecoveryInterval)
+	}
+	if req.RecoveryBackoffFactor != nil {
+		updateOrAddFieldString("recovery_backoff_factor", strconv.FormatFloat(*req.RecoveryBackoffFactor, 'f', -1, 64))
+	}
+	if req.RecoveryMaxInterval != nil {
+		updateOrAddField("recovery_max_interval", *req.RecoveryMaxInterval)
 	}
 	if req.HealthCheckPeriod != nil {
 		updateOrAddField("health_check_period", *req.HealthCheckPeriod)
@@ -414,6 +440,8 @@ func (c *AdminController) reloadManager(config *appconfig.OpenAIProxyConfig) err
 	recoveryInterval := 30
 	healthCheckPeriod := 60
 	maxFailures := 3
+	recoveryBackoffFactor := 2.0
+	recoveryMaxInterval := 3600
 
 	if config.RecoveryInterval > 0 {
 		recoveryInterval = config.RecoveryInterval
@@ -424,11 +452,19 @@ func (c *AdminController) reloadManager(config *appconfig.OpenAIProxyConfig) err
 	if config.MaxFailures > 0 {
 		maxFailures = config.MaxFailures
 	}
+	if config.RecoveryBackoffFactor > 0 {
+		recoveryBackoffFactor = config.RecoveryBackoffFactor
+	}
+	if config.RecoveryMaxInterval > 0 {
+		recoveryMaxInterval = config.RecoveryMaxInterval
+	}
 
 	mgrConfig := upstream.ManagerConfig{
-		MaxFailures:       maxFailures,
-		RecoveryInterval:  time.Duration(recoveryInterval) * time.Second,
-		HealthCheckPeriod: time.Duration(healthCheckPeriod) * time.Second,
+		MaxFailures:           maxFailures,
+		RecoveryInterval:      time.Duration(recoveryInterval) * time.Second,
+		RecoveryBackoffFactor: recoveryBackoffFactor,
+		RecoveryMaxInterval:   time.Duration(recoveryMaxInterval) * time.Second,
+		HealthCheckPeriod:     time.Duration(healthCheckPeriod) * time.Second,
 	}
 
 	// 创建新的 Manager

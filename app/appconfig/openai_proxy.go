@@ -17,7 +17,9 @@ type OpenAIProxyConfig struct {
 	MaxRetries int `mapstructure:"max_retries" yaml:"max_retries"` // 单次请求最大尝试次数（默认1，不重试；设置>1启用故障转移）
 
 	// 供应商管理器配置
-	MaxFailures       int `mapstructure:"max_failures" yaml:"max_failures"`               // 最大连续失败次数（超过后标记供应商不健康）
-	RecoveryInterval  int `mapstructure:"recovery_interval" yaml:"recovery_interval"`     // 恢复间隔（秒）
-	HealthCheckPeriod int `mapstructure:"health_check_period" yaml:"health_check_period"` // 健康检查周期（秒）
+	MaxFailures           int     `mapstructure:"max_failures" yaml:"max_failures"`                       // 最大连续失败次数（超过后标记供应商不健康）
+	RecoveryInterval      int     `mapstructure:"recovery_interval" yaml:"recovery_interval"`             // 恢复间隔（秒）
+	RecoveryBackoffFactor float64 `mapstructure:"recovery_backoff_factor" yaml:"recovery_backoff_factor"` // 恢复检查退避倍数（默认2.0，设为1禁用退避）
+	RecoveryMaxInterval   int     `mapstructure:"recovery_max_interval" yaml:"recovery_max_interval"`     // 恢复检查最大间隔（秒，默认3600）
+	HealthCheckPeriod     int     `mapstructure:"health_check_period" yaml:"health_check_period"`         // 健康检查周期（秒）
 }

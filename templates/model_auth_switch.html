@@ -840,6 +840,18 @@
                                    style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
                         </div>
                         <div style="flex: 1; min-width: 200px;">
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">恢复检查退避倍数</label>
+                            <input type="number" v-model.number="globalConfig.recovery_backoff_factor" min="1" step="0.1"
+                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
+                            <span style="font-size: 11px; color: #999;">设为1禁用退避，默认2.0（每次失败间隔翻倍）</span>
+                        </div>
+                        <div style="flex: 1; min-width: 200px;">
+                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">恢复检查最大间隔（秒）</label>
+                            <input type="number" v-model.number="globalConfig.recovery_max_interval" min="1"
+                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
+                            <span style="font-size: 11px; color: #999;">退避上限，默认3600（1小时）</span>
+                        </div>
+                        <div style="flex: 1; min-width: 200px;">
                             <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">健康检查周期（秒）</label>
                             <input type="number" v-model.number="globalConfig.health_check_period" min="1"
                                    style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
@@ -1006,6 +1018,8 @@
                     max_retries: 0,
                     max_failures: 0,
                     recovery_interval: 0,
+                    recovery_backoff_factor: 0,
+                    recovery_max_interval: 0,
                     health_check_period: 0
                 },
                 saving: false,
@@ -1121,6 +1135,8 @@
                         max_retries: data.max_retries || 0,
                         max_failures: data.max_failures || 0,
                         recovery_interval: data.recovery_interval || 0,
+                        recovery_backoff_factor: data.recovery_backoff_factor || 0,
+                        recovery_max_interval: data.recovery_max_interval || 0,
                         health_check_period: data.health_check_period || 0
                     };
                 } catch (e) {
@@ -1161,6 +1177,8 @@
                         max_retries: this.globalConfig.max_retries,
                         max_failures: this.globalConfig.max_failures,
                         recovery_interval: this.globalConfig.recovery_interval,
+                        recovery_backoff_factor: this.globalConfig.recovery_backoff_factor,
+                        recovery_max_interval: this.globalConfig.recovery_max_interval,
                         health_check_period: this.globalConfig.health_check_period
                     }, {
                         headers: {'X-API-Key': this.authCode}

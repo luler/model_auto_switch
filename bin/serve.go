@@ -107,9 +107,11 @@ func initOpenAIProxy(engine *gin.Engine) *upstream.Manager {
 
 	// 创建管理器配置
 	mgrConfig := upstream.ManagerConfig{
-		MaxFailures:       config.MaxFailures,
-		RecoveryInterval:  time.Duration(config.RecoveryInterval) * time.Second,
-		HealthCheckPeriod: time.Duration(config.HealthCheckPeriod) * time.Second,
+		MaxFailures:           config.MaxFailures,
+		RecoveryInterval:      time.Duration(config.RecoveryInterval) * time.Second,
+		RecoveryBackoffFactor: config.RecoveryBackoffFactor,
+		RecoveryMaxInterval:   time.Duration(config.RecoveryMaxInterval) * time.Second,
+		HealthCheckPeriod:     time.Duration(config.HealthCheckPeriod) * time.Second,
 	}
 
 	if mgrConfig.MaxFailures <= 0 {
@@ -117,6 +119,12 @@ func initOpenAIProxy(engine *gin.Engine) *upstream.Manager {
 	}
 	if mgrConfig.RecoveryInterval <= 0 {
 		mgrConfig.RecoveryInterval = 30 * time.Second
+	}
+	if mgrConfig.RecoveryBackoffFactor <= 0 {
+		mgrConfig.RecoveryBackoffFactor = 2.0
+	}
+	if mgrConfig.RecoveryMaxInterval <= 0 {
+		mgrConfig.RecoveryMaxInterval = 3600 * time.Second
 	}
 	if mgrConfig.HealthCheckPeriod <= 0 {
 		mgrConfig.HealthCheckPeriod = 60 * time.Second

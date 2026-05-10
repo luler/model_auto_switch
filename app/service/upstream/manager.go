@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"gin_base/app/helper/log_helper"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -46,12 +47,13 @@ type ProviderModel struct {
 
 // ModelHealth 模型健康状态（按 upstream 存储）
 type ModelHealth struct {
-	Healthy       atomic.Bool  // 是否健康
-	FailureCount  atomic.Int32 // 连续失败次数
-	LastFailure   atomic.Int64 // 上次失败时间戳(秒)
-	LastCheckTime atomic.Int64 // 上次健康检查时间戳(纳秒)
-	maxFailures   int          // 该模型的连续失败阈值
-	recoverMutex  sync.Mutex   // 恢复检查互斥锁，防止并发重复检查
+	Healthy          atomic.Bool  // 是否健康
+	FailureCount     atomic.Int32 // 连续失败次数
+	LastFailure      atomic.Int64 // 上次失败时间戳(秒)
+	LastCheckTime    atomic.Int64 // 上次健康检查时间戳(纳秒)
+	RecoveryAttempts atomic.Int32 // 连续恢复探测失败次数（用于退避计算）
+	maxFailures      int          // 该模型的连续失败阈值
+	recoverMutex     sync.Mutex   // 恢复检查互斥锁，防止并发重复检查
 }
 
 // ModelStats 模型统计数据（按 alias+upstream 组合存储）
@@ -75,12 +77,13 @@ type ModelStatsSnapshot struct {
 
 // ModelHealthSnapshot 模型健康状态快照
 type ModelHealthSnapshot struct {
-	ProviderName  string `json:"provider_name"`
-	UpstreamModel string `json:"upstream_model"`
-	Healthy       bool   `json:"healthy"`
-	FailureCount  int32  `json:"failure_count"`
-	LastFailure   int64  `json:"last_failure"`
-	LastCheckTime int64  `json:"last_check_time"`
+	ProviderName     string `json:"provider_name"`
+	UpstreamModel    string `json:"upstream_model"`
+	Healthy          bool   `json:"healthy"`
+	FailureCount     int32  `json:"failure_count"`
+	LastFailure      int64  `json:"last_failure"`
+	LastCheckTime    int64  `json:"last_check_time"`
+	RecoveryAttempts int32  `json:"recovery_attempts"`
 }
 
 // StatsSnapshotFile 模型统计持久化文件
@@ -151,13 +154,15 @@ type Manager struct {
 	roundRobinCounter atomic.Uint64
 
 	// 配置
-	maxFailures       int           // 最大连续失败次数，超过后标记为不健康
-	recoveryInterval  time.Duration // 恢复检查间隔
-	healthCheckPeriod time.Duration // 健康检查周期
-	statsPersistPath  string        // 模型统计持久化文件路径
-	statsPersistEvery time.Duration // 模型统计持久化周期
-	currentStatsDate  atomic.Value  // 当前统计日期（YYYY-MM-DD）
-	dailyStatsMu      sync.RWMutex
+	maxFailures           int           // 最大连续失败次数，超过后标记为不健康
+	recoveryInterval      time.Duration // 恢复检查间隔
+	recoveryBackoffFactor float64       // 恢复检查退避倍数
+	recoveryMaxInterval   time.Duration // 恢复检查最大间隔
+	healthCheckPeriod     time.Duration // 健康检查周期
+	statsPersistPath      string        // 模型统计持久化文件路径
+	statsPersistEvery     time.Duration // 模型统计持久化周期
+	currentStatsDate      atomic.Value  // 当前统计日期（YYYY-MM-DD）
+	dailyStatsMu          sync.RWMutex
 
 	// 停止信号
 	stopChan  chan struct{}
@@ -169,21 +174,25 @@ type Manager struct {
 
 // ManagerConfig 管理器配置
 type ManagerConfig struct {
-	MaxFailures       int           // 最大连续失败次数
-	RecoveryInterval  time.Duration // 恢复间隔
-	HealthCheckPeriod time.Duration // 健康检查周期
+	MaxFailures           int           // 最大连续失败次数
+	RecoveryInterval      time.Duration // 恢复间隔
+	RecoveryBackoffFactor float64       // 恢复检查退避倍数
+	RecoveryMaxInterval   time.Duration // 恢复检查最大间隔
+	HealthCheckPeriod     time.Duration // 健康检查周期
 }
 
 // NewManager 创建供应商管理器
 func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 	m := &Manager{
-		providers:         make([]*Provider, 0, len(configs)),
-		maxFailures:       mgrConfig.MaxFailures,
-		recoveryInterval:  mgrConfig.RecoveryInterval,
-		healthCheckPeriod: mgrConfig.HealthCheckPeriod,
-		statsPersistPath:  defaultStatsPersistPath,
-		statsPersistEvery: defaultStatsPersistInterval,
-		stopChan:          make(chan struct{}),
+		providers:             make([]*Provider, 0, len(configs)),
+		maxFailures:           mgrConfig.MaxFailures,
+		recoveryInterval:      mgrConfig.RecoveryInterval,
+		recoveryBackoffFactor: mgrConfig.RecoveryBackoffFactor,
+		recoveryMaxInterval:   mgrConfig.RecoveryMaxInterval,
+		healthCheckPeriod:     mgrConfig.HealthCheckPeriod,
+		statsPersistPath:      defaultStatsPersistPath,
+		statsPersistEvery:     defaultStatsPersistInterval,
+		stopChan:              make(chan struct{}),
 	}
 	m.currentStatsDate.Store(currentStatsDate())
 
@@ -458,6 +467,7 @@ func (m *Manager) RecordSuccess(p *Provider, alias string, upstreamModel string)
 	// 重置该upstream的失败计数（健康状态按 upstream 维度）
 	if health, exists := p.modelHealths[upstreamModel]; exists {
 		health.FailureCount.Store(0)
+		health.RecoveryAttempts.Store(0)
 		if !health.Healthy.Load() {
 			health.Healthy.Store(true)
 			log_helper.Info(fmt.Sprintf("Provider %s upstream model %s recovered and marked as healthy", p.Config.Name, upstreamModel))
@@ -614,12 +624,13 @@ func (m *Manager) ExportHealthSnapshot() HealthSnapshotFile {
 		p.mu.RLock()
 		for upstreamModel, health := range p.modelHealths {
 			snapshot.Models = append(snapshot.Models, ModelHealthSnapshot{
-				ProviderName:  p.Config.Name,
-				UpstreamModel: upstreamModel,
-				Healthy:       health.Healthy.Load(),
-				FailureCount:  health.FailureCount.Load(),
-				LastFailure:   health.LastFailure.Load(),
-				LastCheckTime: health.LastCheckTime.Load(),
+				ProviderName:     p.Config.Name,
+				UpstreamModel:    upstreamModel,
+				Healthy:          health.Healthy.Load(),
+				FailureCount:     health.FailureCount.Load(),
+				LastFailure:      health.LastFailure.Load(),
+				LastCheckTime:    health.LastCheckTime.Load(),
+				RecoveryAttempts: health.RecoveryAttempts.Load(),
 			})
 		}
 		p.mu.RUnlock()
@@ -695,6 +706,7 @@ func (m *Manager) ImportHealthSnapshot(snapshot HealthSnapshotFile) {
 		health.FailureCount.Store(item.FailureCount)
 		health.LastFailure.Store(item.LastFailure)
 		health.LastCheckTime.Store(item.LastCheckTime)
+		health.RecoveryAttempts.Store(item.RecoveryAttempts)
 	}
 }
 
@@ -807,9 +819,6 @@ func (m *Manager) checkAndRecover() {
 
 	log_helper.Info(fmt.Sprintf("Health check: %d unhealthy models: %v", len(unhealthyModels), unhealthyModels))
 
-	// 使用 recoveryInterval 作为最小检查间隔
-	minCheckInterval := m.recoveryInterval.Nanoseconds()
-
 	for _, p := range providers {
 		p.mu.RLock()
 		healths := p.modelHealths
@@ -819,10 +828,12 @@ func (m *Manager) checkAndRecover() {
 			if !health.Healthy.Load() {
 				// 获取互斥锁，确保同一时间只有一个检查在执行
 				health.recoverMutex.Lock()
+				// 使用退避策略计算该模型的有效恢复间隔
+				effectiveInterval := m.effectiveRecoveryInterval(health.RecoveryAttempts.Load())
 				// 在锁内重新获取当前时间，确保时间检查的准确性
 				now := time.Now().UnixNano()
 				lastCheckTime := health.LastCheckTime.Load()
-				if now-lastCheckTime >= minCheckInterval {
+				if now-lastCheckTime >= effectiveInterval {
 					// 更新检查时间
 					health.LastCheckTime.Store(now)
 					// 同步执行检查
@@ -843,6 +854,9 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 	req, err := http.NewRequestWithContext(ctx, "GET", p.Config.BaseURL+"/v1/models", nil)
 	if err != nil {
 		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: create request failed: %v", p.Config.Name, upstreamModel, err))
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+		}
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+p.Config.APIKey)
@@ -850,12 +864,18 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
 		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: models API failed: %v", p.Config.Name, upstreamModel, err))
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+		}
 		return
 	}
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: models API returned %d", p.Config.Name, upstreamModel, resp.StatusCode))
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+		}
 		return
 	}
 
@@ -867,6 +887,9 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 	testReq, err := http.NewRequestWithContext(testCtx, "POST", p.Config.BaseURL+"/v1/chat/completions", bytes.NewReader(testReqBody))
 	if err != nil {
 		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: create completions request failed: %v", p.Config.Name, upstreamModel, err))
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+		}
 		return
 	}
 
@@ -876,6 +899,9 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 	testResp, err := p.httpClient.Do(testReq)
 	if err != nil {
 		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: completions API failed: %v", p.Config.Name, upstreamModel, err))
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+		}
 		return
 	}
 	defer testResp.Body.Close()
@@ -885,11 +911,34 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.FailureCount.Store(0)
 			health.Healthy.Store(true)
+			health.RecoveryAttempts.Store(0)
 		}
 		log_helper.Info(fmt.Sprintf("Recovery check %s/%s: recovered (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
 	} else {
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: completions returned %d, still unhealthy", p.Config.Name, upstreamModel, testResp.StatusCode))
+		attempts := int32(0)
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+			attempts = health.RecoveryAttempts.Load()
+		}
+		nextInterval := time.Duration(m.effectiveRecoveryInterval(attempts))
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: completions returned %d, still unhealthy (attempts=%d, next check in ~%s)", p.Config.Name, upstreamModel, testResp.StatusCode, attempts, nextInterval))
 	}
+}
+
+// effectiveRecoveryInterval 根据连续恢复探测失败次数计算有效恢复间隔（纳秒）
+// 公式: min(recoveryInterval * backoffFactor^attempts, recoveryMaxInterval)
+// attempts <= 0 或 backoffFactor <= 1.0 时返回基础间隔
+func (m *Manager) effectiveRecoveryInterval(attempts int32) int64 {
+	if attempts <= 0 || m.recoveryBackoffFactor <= 1.0 {
+		return m.recoveryInterval.Nanoseconds()
+	}
+	multiplier := math.Pow(m.recoveryBackoffFactor, float64(attempts))
+	effective := float64(m.recoveryInterval.Nanoseconds()) * multiplier
+	maxNanos := m.recoveryMaxInterval.Nanoseconds()
+	if effective > float64(maxNanos) {
+		return maxNanos
+	}
+	return int64(effective)
 }
 
 // Stop 停止管理器
