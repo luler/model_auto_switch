@@ -59,8 +59,27 @@
             transition: all 0.2s;
         }
 
-        .btn-logout:hover {
-            background: rgba(255, 255, 255, 0.3);
+        .back-to-top {
+            position: fixed;
+            right: 28px;
+            bottom: 28px;
+            z-index: 950;
+            width: 46px;
+            height: 46px;
+            border: 2px solid rgba(255, 255, 255, 0.95);
+            border-radius: 50%;
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+            font-size: 22px;
+            font-weight: 700;
+            cursor: pointer;
+            box-shadow: 0 10px 25px rgba(17, 153, 142, 0.35);
+            transition: all 0.2s;
+        }
+
+        .back-to-top:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 14px 30px rgba(17, 153, 142, 0.45);
         }
 
         .auth-card {
@@ -614,6 +633,14 @@
                 padding: 10px;
             }
 
+            .back-to-top {
+                right: 14px;
+                bottom: 14px;
+                width: 42px;
+                height: 42px;
+                font-size: 20px;
+            }
+
             .header h1 {
                 font-size: 1.5rem;
                 padding-right: 60px;
@@ -1043,6 +1070,7 @@
             </div>
         </div>
     </div>
+    <button class="back-to-top" v-if="showBackToTop" @click="scrollToTop" title="回到顶部">↑</button>
 </div>
 
 <script>
@@ -1093,7 +1121,8 @@
                 logsLoading: false,
                 logsContent: '',
                 logsAutoRefresh: false,
-                logsTimer: null
+                logsTimer: null,
+                showBackToTop: false
             };
         },
         mounted() {
@@ -1108,8 +1137,22 @@
             if (this.authCode) {
                 this.doAuth();
             }
+            window.addEventListener('scroll', this.handleScroll);
+            this.handleScroll();
+        },
+        beforeUnmount() {
+            window.removeEventListener('scroll', this.handleScroll);
+            if (this.logsTimer) {
+                clearInterval(this.logsTimer);
+            }
         },
         methods: {
+            handleScroll() {
+                this.showBackToTop = window.scrollY > 500;
+            },
+            scrollToTop() {
+                window.scrollTo({top: 0, behavior: 'smooth'});
+            },
             async doAuth() {
                 if (!this.authCode) {
                     this.authError = '请输入管理密钥';
