@@ -794,7 +794,7 @@
                 </div>
 
                 <div class="loading" v-if="healthLoading">加载中</div>
-                <div class="table-wrapper" v-else>
+                <div class="table-wrapper">
                     <table>
                         <thead>
                         <tr>
@@ -874,8 +874,8 @@
                 </div>
 
                 <div class="floating-actions">
-                    <button class="btn btn-secondary refresh-btn" @click="fetchHealth">
-                        <span>刷新</span>
+                    <button class="btn btn-secondary refresh-btn" @click="fetchHealth" :disabled="healthLoading">
+                        <span>{{ healthLoading ? '刷新中' : '刷新' }}</span>
                     </button>
                     <button class="btn btn-danger refresh-btn" @click="confirmResetStats">
                         <span>清空统计</span>
