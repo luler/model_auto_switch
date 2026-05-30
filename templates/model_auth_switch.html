@@ -205,6 +205,16 @@
             box-shadow: 0 5px 15px rgba(17, 153, 142, 0.4);
         }
 
+        .btn-warning {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+        }
+
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(245, 87, 108, 0.4);
+        }
+
         .btn-danger {
             background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
             color: white;
@@ -342,6 +352,28 @@
         .status-unhealthy {
             background: #f8d7da;
             color: #721c24;
+        }
+
+        .status-clickable {
+            cursor: pointer;
+            user-select: none;
+            transition: all 0.2s;
+        }
+
+        .status-clickable:hover {
+            transform: scale(1.05);
+            box-shadow: 0 2px 8px rgba(114, 28, 36, 0.3);
+        }
+
+        .status-checking {
+            cursor: wait;
+            opacity: 0.7;
+            animation: pulse 1s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.7; }
+            50% { opacity: 0.4; }
         }
 
         .loading {
@@ -816,8 +848,10 @@
                             <td>{{ model.upstream_model }}</td>
                             <td>
                                         <span class="status-badge"
-                                              :class="model.healthy ? 'status-healthy' : 'status-unhealthy'">
-                                            {{ model.healthy ? '健康' : '异常' }}
+                                              :class="[model.healthy ? 'status-healthy' : 'status-unhealthy', {'status-clickable': !model.healthy, 'status-checking': isChecking(model.provider_name, model.upstream_model)}]"
+                                              :title="model.healthy ? '' : '点击立即进行健康检测'"
+                                              @click="checkSingleHealth(model)">
+                                            {{ isChecking(model.provider_name, model.upstream_model) ? '检查中...' : (model.healthy ? '健康' : '异常') }}
                                         </span>
                             </td>
                             <td>
@@ -876,6 +910,9 @@
                 <div class="floating-actions">
                     <button class="btn btn-secondary refresh-btn" @click="fetchHealth" :disabled="healthLoading">
                         <span>{{ healthLoading ? '刷新中' : '刷新' }}</span>
+                    </button>
+                    <button class="btn btn-warning refresh-btn" @click="checkAllUnhealthy" :disabled="healthCheckAllLoading">
+                        <span>{{ healthCheckAllLoading ? '检查中...' : '立即健康检查' }}</span>
                     </button>
                     <button class="btn btn-danger refresh-btn" @click="confirmResetStats">
                         <span>清空统计</span>
@@ -1092,6 +1129,8 @@
                     healthyModels: 0,
                     unhealthyModels: 0
                 },
+                healthCheckAllLoading: false,
+                checkingModels: [], // 正在检查的模型列表 [{provider_name, upstream_model}]
 
                 // 供应商配置
                 configLoading: false,
@@ -1489,6 +1528,64 @@
                     await this.fetchHealth();
                 } catch (e) {
                     alert(e.response?.data?.message || e.message || '清空统计失败');
+                }
+            },
+            isChecking(providerName, upstreamModel) {
+                return this.checkingModels.some(m => m.provider_name === providerName && m.upstream_model === upstreamModel);
+            },
+            async checkSingleHealth(model) {
+                if (model.healthy) return;
+                if (this.isChecking(model.provider_name, model.upstream_model)) return;
+
+                this.checkingModels.push({provider_name: model.provider_name, upstream_model: model.upstream_model});
+                try {
+                    const res = await axios.post('/api/admin/health/check', {
+                        provider_name: model.provider_name,
+                        upstream_model: model.upstream_model
+                    }, {
+                        headers: {'X-API-Key': this.authCode}
+                    });
+                    if (res.data.code !== 200) {
+                        throw new Error(res.data.message || '检查失败');
+                    }
+                    // 刷新健康状态
+                    await this.fetchHealth();
+                } catch (e) {
+                    console.error('健康检查失败:', e);
+                } finally {
+                    this.checkingModels = this.checkingModels.filter(
+                        m => !(m.provider_name === model.provider_name && m.upstream_model === model.upstream_model)
+                    );
+                }
+            },
+            async checkAllUnhealthy() {
+                if (this.healthCheckAllLoading) return;
+                if (this.healthStats.unhealthyModels === 0) {
+                    alert('当前没有异常模型需要检查');
+                    return;
+                }
+                this.healthCheckAllLoading = true;
+                try {
+                    const res = await axios.post('/api/admin/health/check', {}, {
+                        headers: {'X-API-Key': this.authCode}
+                    });
+                    if (res.data.code !== 200) {
+                        throw new Error(res.data.message || '检查失败');
+                    }
+                    const results = res.data.data || [];
+                    const recovered = results.filter(r => r.healthy).length;
+                    const total = results.length;
+                    if (total === 0) {
+                        alert('没有异常模型需要检查');
+                    } else {
+                        alert(`检查完成：共 ${total} 个异常模型，${recovered} 个已恢复健康`);
+                    }
+                    // 刷新健康状态
+                    await this.fetchHealth();
+                } catch (e) {
+                    alert(e.response?.data?.message || e.message || '健康检查失败');
+                } finally {
+                    this.healthCheckAllLoading = false;
                 }
             }
         },

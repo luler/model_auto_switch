@@ -148,6 +148,34 @@ func (c *AdminController) ResetStats(ctx *gin.Context) {
 	response_helper.Success(ctx, "统计已清空")
 }
 
+// CheckHealthRequest 健康检查请求
+type CheckHealthRequest struct {
+	ProviderName  string `json:"provider_name"`
+	UpstreamModel string `json:"upstream_model"`
+}
+
+// CheckHealth 立即执行健康检查
+func (c *AdminController) CheckHealth(ctx *gin.Context) {
+	apiKey := ctx.GetHeader("X-API-Key")
+	if !c.ValidateAPIKey(apiKey) {
+		response_helper.Common(ctx, 401, "未授权")
+		return
+	}
+
+	manager := c.GetManager()
+	if manager == nil {
+		response_helper.Fail(ctx, "服务未初始化")
+		return
+	}
+
+	var req CheckHealthRequest
+	// 允许空body（检查所有异常模型）
+	_ = ctx.ShouldBindJSON(&req)
+
+	results := manager.CheckHealthNow(req.ProviderName, req.UpstreamModel)
+	response_helper.Success(ctx, "检查完成", results)
+}
+
 // GetHealth 获取健康状态
 func (c *AdminController) GetHealth(ctx *gin.Context) {
 	apiKey := ctx.GetHeader("X-API-Key")

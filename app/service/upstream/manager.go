@@ -941,6 +941,74 @@ func (m *Manager) effectiveRecoveryInterval(attempts int32) int64 {
 	return int64(effective)
 }
 
+// HealthCheckResult 健康检查结果
+type HealthCheckResult struct {
+	ProviderName  string `json:"provider_name"`
+	UpstreamModel string `json:"upstream_model"`
+	Healthy       bool   `json:"healthy"`
+}
+
+// checkTarget 健康检查目标
+type checkTarget struct {
+	provider *Provider
+	upstream string
+}
+
+// CheckHealthNow 立即执行健康检查，复用 tryRecoverModel，与定时健康检查逻辑完全一致。
+// 如果 providerName 和 upstreamModel 非空，检查指定模型；否则检查所有异常模型。
+func (m *Manager) CheckHealthNow(providerName, upstreamModel string) []HealthCheckResult {
+	// 收集检查目标
+	var targets []checkTarget
+
+	if providerName != "" && upstreamModel != "" {
+		// 单个检查：查找指定供应商和模型
+		m.mu.RLock()
+		for _, p := range m.providers {
+			if p.Config.Name == providerName {
+				if _, exists := p.modelHealths[upstreamModel]; exists {
+					targets = append(targets, checkTarget{provider: p, upstream: upstreamModel})
+				}
+				break
+			}
+		}
+		m.mu.RUnlock()
+		// 未找到目标，直接返回失败
+		if len(targets) == 0 {
+			return []HealthCheckResult{{ProviderName: providerName, UpstreamModel: upstreamModel, Healthy: false}}
+		}
+	} else {
+		// 批量检查：收集所有异常模型
+		m.mu.RLock()
+		for _, p := range m.providers {
+			p.mu.RLock()
+			for upstream, health := range p.modelHealths {
+				if !health.Healthy.Load() {
+					targets = append(targets, checkTarget{provider: p, upstream: upstream})
+				}
+			}
+			p.mu.RUnlock()
+		}
+		m.mu.RUnlock()
+	}
+
+	// 统一执行检查
+	var results []HealthCheckResult
+	for _, t := range targets {
+		health := t.provider.modelHealths[t.upstream]
+		health.recoverMutex.Lock()
+		health.LastCheckTime.Store(time.Now().UnixNano())
+		m.tryRecoverModel(t.provider, t.upstream)
+		healthy := health.Healthy.Load()
+		health.recoverMutex.Unlock()
+		results = append(results, HealthCheckResult{
+			ProviderName:  t.provider.Config.Name,
+			UpstreamModel: t.upstream,
+			Healthy:       healthy,
+		})
+	}
+	return results
+}
+
 // Stop 停止管理器
 func (m *Manager) Stop() {
 	m.stopOnce.Do(func() {
