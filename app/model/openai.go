@@ -194,6 +194,20 @@ type ChatCompletionChunk struct {
 	SystemFingerprint string   `json:"system_fingerprint,omitempty"`
 }
 
+// ImageGenerationRequest OpenAI 图片生成请求
+type ImageGenerationRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream,omitempty"`
+}
+
+// ImageEditRequest OpenAI 图片编辑请求
+type ImageEditRequest struct {
+	Model  string `json:"model"`
+	Prompt string `json:"prompt"`
+	Stream bool   `json:"stream,omitempty"`
+}
+
 // ModelsResponse 模型列表响应
 type ModelsResponse struct {
 	Object string      `json:"object"`

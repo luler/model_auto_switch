@@ -12,6 +12,8 @@ import (
 	"gin_base/app/model"
 	"gin_base/app/service/upstream"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -87,13 +89,7 @@ func (c *Controller) ChatCompletions(ctx *gin.Context) {
 		return
 	}
 
-	// 复制请求头（除了敏感头）
-	headers := make(map[string]string)
-	for k, v := range ctx.Request.Header {
-		if len(v) > 0 && k != "Authorization" && k != "Host" && k != "Content-Length" {
-			headers[k] = v[0]
-		}
-	}
+	headers := copyRequestHeaders(ctx)
 
 	// 保存原始模型名（别名）
 	aliasModel := req.Model
@@ -106,6 +102,121 @@ func (c *Controller) ChatCompletions(ctx *gin.Context) {
 	} else {
 		c.handleNonStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel, reqID)
 	}
+}
+
+// ImagesGenerations 处理 /v1/images/generations 请求
+func (c *Controller) ImagesGenerations(ctx *gin.Context) {
+	bodyBytes, err := io.ReadAll(ctx.Request.Body)
+	if err != nil {
+		c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
+		return
+	}
+
+	var req model.ImageGenerationRequest
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", err.Error())
+		return
+	}
+	if req.Model == "" {
+		c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", "model is required")
+		return
+	}
+	if req.Prompt == "" {
+		c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", "prompt is required")
+		return
+	}
+
+	providerModels := c.getLoadBalancedProviderModels(req.Model)
+	if len(providerModels) == 0 {
+		c.sendError(ctx, http.StatusServiceUnavailable, "service_unavailable", "no provider available for model: "+req.Model)
+		return
+	}
+
+	if req.Stream {
+		c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, copyRequestHeaders(ctx), req.Model, generateRequestID(), "/v1/images/generations", "image generations", processJSONProxyBody, false)
+		return
+	}
+
+	c.handleProxyRequest(ctx, providerModels, bodyBytes, copyRequestHeaders(ctx), req.Model, generateRequestID(), "/v1/images/generations", "image generations", processJSONProxyBody)
+}
+
+// ImagesEdits 处理 /v1/images/edits 请求
+func (c *Controller) ImagesEdits(ctx *gin.Context) {
+	bodyBytes, err := io.ReadAll(ctx.Request.Body)
+	if err != nil {
+		c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", "failed to read request body")
+		return
+	}
+
+	contentType := ctx.GetHeader("Content-Type")
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	headers := copyRequestHeaders(ctx)
+
+	if mediaType == "application/json" || mediaType == "" {
+		var req model.ImageEditRequest
+		if err := json.Unmarshal(bodyBytes, &req); err != nil {
+			c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+		if req.Model == "" {
+			c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", "model is required")
+			return
+		}
+		if req.Prompt == "" {
+			c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", "prompt is required")
+			return
+		}
+
+		providerModels := c.getLoadBalancedProviderModels(req.Model)
+		if len(providerModels) == 0 {
+			c.sendError(ctx, http.StatusServiceUnavailable, "service_unavailable", "no provider available for model: "+req.Model)
+			return
+		}
+
+		if req.Stream {
+			c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, headers, req.Model, generateRequestID(), "/v1/images/edits", "image edits", processJSONProxyBody, false)
+			return
+		}
+
+		c.handleProxyRequest(ctx, providerModels, bodyBytes, headers, req.Model, generateRequestID(), "/v1/images/edits", "image edits", processJSONProxyBody)
+		return
+	}
+
+	if strings.HasPrefix(mediaType, "multipart/form-data") {
+		aliasModel, err := validateImageEditMultipart(bodyBytes, contentType)
+		if err != nil {
+			c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
+
+		providerModels := c.getLoadBalancedProviderModels(aliasModel)
+		if len(providerModels) == 0 {
+			c.sendError(ctx, http.StatusServiceUnavailable, "service_unavailable", "no provider available for model: "+aliasModel)
+			return
+		}
+
+		processor := func(body []byte, headers map[string]string, pm upstream.ProviderModel, aliasModel string) ([]byte, map[string]string) {
+			return processMultipartProxyBody(body, headers, pm, aliasModel, contentType)
+		}
+		if multipartHasStream(bodyBytes, contentType) {
+			c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel, generateRequestID(), "/v1/images/edits", "image edits", processor, false)
+			return
+		}
+		c.handleProxyRequest(ctx, providerModels, bodyBytes, headers, aliasModel, generateRequestID(), "/v1/images/edits", "image edits", processor)
+		return
+	}
+
+	c.sendError(ctx, http.StatusBadRequest, "invalid_request_error", "unsupported content type")
+}
+
+func copyRequestHeaders(ctx *gin.Context) map[string]string {
+	headers := make(map[string]string)
+	for k, v := range ctx.Request.Header {
+		if len(v) > 0 && k != "Authorization" && k != "Host" && k != "Content-Length" {
+			headers[k] = v[0]
+		}
+	}
+	return headers
 }
 
 // getLoadBalancedProviderModels 获取负载均衡后的 ProviderModel 列表
@@ -184,8 +295,18 @@ func processRequestBody(body []byte, pm upstream.ProviderModel, aliasModel strin
 	return newBody
 }
 
+type proxyBodyProcessor func(body []byte, headers map[string]string, pm upstream.ProviderModel, aliasModel string) ([]byte, map[string]string)
+
+func processJSONProxyBody(body []byte, headers map[string]string, pm upstream.ProviderModel, aliasModel string) ([]byte, map[string]string) {
+	return processRequestBody(body, pm, aliasModel), headers
+}
+
 // handleNonStreamRequest 处理非流式请求
 func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string, reqID string) {
+	c.handleProxyRequest(ctx, providerModels, body, headers, aliasModel, reqID, "/v1/chat/completions", "completions", processJSONProxyBody)
+}
+
+func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string, reqID string, upstreamPath string, operation string, processor proxyBodyProcessor) {
 	var lastErr error
 	var triedProviders []string
 
@@ -207,23 +328,22 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		providerName := fmt.Sprintf("%s(%s)", pm.Provider.Config.Name, pm.Mapping.Upstream)
 		triedProviders = append(triedProviders, providerName)
 
-		// 处理请求体：替换模型名 + 过滤参数
-		reqBody := processRequestBody(body, pm, aliasModel)
+		reqBody, reqHeaders := processor(body, headers, pm, aliasModel)
 
 		// 创建带超时的上下文
 		reqCtx, cancel := context.WithTimeout(ctx.Request.Context(), time.Duration(pm.Provider.Config.Timeout)*time.Second)
-		resp, err := pm.Provider.ProxyRequest(reqCtx, "POST", "/v1/chat/completions", reqBody, headers)
+		resp, err := pm.Provider.ProxyRequest(reqCtx, "POST", upstreamPath, reqBody, reqHeaders)
 
 		if err != nil {
 			cancel()
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Info(fmt.Sprintf("[%s] %s #%d completions %s client disconnected", reqID, aliasModel, i+1, providerName))
+				log_helper.Info(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: %v", reqID, aliasModel, i+1, providerName, err))
-			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
 
@@ -235,19 +355,19 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Info(fmt.Sprintf("[%s] %s #%d completions %s client disconnected", reqID, aliasModel, i+1, providerName))
+				log_helper.Info(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: %v", reqID, aliasModel, i+1, providerName, err))
-			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
 
 		// 检查HTTP状态码 - 非200都视为失败
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d completions %s failed: status %d", reqID, aliasModel, i+1, providerName, resp.StatusCode))
-			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
+			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
 
@@ -258,7 +378,7 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 		if i > 0 {
 			attemptInfo += "(retry)"
 		}
-		log_helper.Info(fmt.Sprintf("[%s] %s %s completions -> %s/%s", reqID, aliasModel, attemptInfo, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		log_helper.Info(fmt.Sprintf("[%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		ctx.Data(resp.StatusCode, "application/json", respBody)
 		return
 	}
@@ -275,6 +395,10 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 
 // handleStreamRequest 处理流式请求
 func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string, reqID string) {
+	c.handleProxyStreamRequest(ctx, providerModels, body, headers, aliasModel, reqID, "/v1/chat/completions", "stream", processJSONProxyBody, true)
+}
+
+func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string, reqID string, upstreamPath string, operation string, processor proxyBodyProcessor, validateChatContent bool) {
 	var lastErr error
 	var triedProviders []string
 
@@ -296,19 +420,18 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		providerName := fmt.Sprintf("%s(%s)", pm.Provider.Config.Name, pm.Mapping.Upstream)
 		triedProviders = append(triedProviders, providerName)
 
-		// 处理请求体：替换模型名 + 过滤参数
-		reqBody := processRequestBody(body, pm, aliasModel)
+		reqBody, reqHeaders := processor(body, headers, pm, aliasModel)
 
-		resp, err := pm.Provider.ProxyStreamRequest(ctx.Request.Context(), "/v1/chat/completions", reqBody, headers)
+		resp, err := pm.Provider.ProxyStreamRequest(ctx.Request.Context(), upstreamPath, reqBody, reqHeaders)
 		if err != nil {
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Info(fmt.Sprintf("[%s] %s #%d stream %s client disconnected", reqID, aliasModel, i+1, providerName))
+				log_helper.Info(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, err))
-			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
 
@@ -316,8 +439,8 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: status %d", reqID, aliasModel, i+1, providerName, resp.StatusCode))
-			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
+			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
 
@@ -355,6 +478,10 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 				break
 			}
 
+			if !validateChatContent {
+				break
+			}
+
 			// 如果遇到有实际内容的chunk（非空choices），说明流正常，停止预读
 			if isValidStreamChunk(line) {
 				hasValidContent = true
@@ -365,17 +492,17 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		if streamErr != nil {
 			resp.Body.Close()
 			lastErr = streamErr
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, lastErr))
-			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
 
 		// 检测空流（HTTP 200但没有任何实际内容）
-		if hasDone && !hasValidContent {
+		if validateChatContent && hasDone && !hasValidContent {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("empty stream: no content generated")
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d stream %s failed: %v", reqID, aliasModel, i+1, providerName, lastErr))
-			c.getManager().RecordFailure(pm.Provider, aliasModel, pm.Mapping.Upstream)
+			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
 
@@ -385,14 +512,159 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 		if i > 0 {
 			attemptInfo += "(retry)"
 		}
-		log_helper.Info(fmt.Sprintf("[%s] %s %s stream -> %s/%s", reqID, aliasModel, attemptInfo, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		log_helper.Info(fmt.Sprintf("[%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		c.streamResponseWithBufferedLines(ctx, resp, reader, bufferedLines, pm.Mapping.Upstream, aliasModel)
 		return
 	}
 
 	// 所有供应商都失败
-	log_helper.Error(fmt.Sprintf("[%s] %s stream all providers failed: %v, tried: %v", reqID, aliasModel, lastErr, triedProviders))
+	log_helper.Error(fmt.Sprintf("[%s] %s %s all providers failed: %v, tried: %v", reqID, aliasModel, operation, lastErr, triedProviders))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
+}
+
+func validateImageEditMultipart(body []byte, contentType string) (string, error) {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.HasPrefix(mediaType, "multipart/form-data") {
+		return "", fmt.Errorf("invalid multipart content type")
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	var modelValue string
+	hasPrompt := false
+	hasImage := false
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return "", err
+		}
+
+		name := part.FormName()
+		valueBytes, _ := io.ReadAll(part)
+		value := strings.TrimSpace(string(valueBytes))
+		switch name {
+		case "model":
+			modelValue = value
+		case "prompt":
+			hasPrompt = value != ""
+		case "image", "image[]":
+			hasImage = true
+		}
+	}
+
+	if modelValue == "" {
+		return "", fmt.Errorf("model is required")
+	}
+	if !hasPrompt {
+		return "", fmt.Errorf("prompt is required")
+	}
+	if !hasImage {
+		return "", fmt.Errorf("image is required")
+	}
+
+	return modelValue, nil
+}
+
+func multipartHasStream(body []byte, contentType string) bool {
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.HasPrefix(mediaType, "multipart/form-data") {
+		return false
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return false
+		}
+		if part.FormName() != "stream" {
+			continue
+		}
+		valueBytes, _ := io.ReadAll(part)
+		return strings.EqualFold(strings.TrimSpace(string(valueBytes)), "true")
+	}
+	return false
+}
+
+func processMultipartProxyBody(body []byte, headers map[string]string, pm upstream.ProviderModel, aliasModel string, contentType string) ([]byte, map[string]string) {
+	upstreamModel := pm.Mapping.Upstream
+	excludeParams := pm.Provider.Config.ExcludeParams
+	if upstreamModel == aliasModel && len(excludeParams) == 0 {
+		return body, headers
+	}
+
+	mediaType, params, err := mime.ParseMediaType(contentType)
+	if err != nil || !strings.HasPrefix(mediaType, "multipart/form-data") {
+		return body, headers
+	}
+
+	reader := multipart.NewReader(bytes.NewReader(body), params["boundary"])
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	excluded := make(map[string]struct{}, len(excludeParams))
+	for _, param := range excludeParams {
+		excluded[param] = struct{}{}
+	}
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return body, headers
+		}
+
+		name := part.FormName()
+		if _, ok := excluded[name]; ok {
+			continue
+		}
+
+		partBody, err := io.ReadAll(part)
+		if err != nil {
+			return body, headers
+		}
+
+		if part.FileName() == "" {
+			value := string(partBody)
+			trimmedValue := strings.TrimSpace(value)
+			if trimmedValue == "" || trimmedValue == "[undefined]" || trimmedValue == "null" {
+				continue
+			}
+			if name == "model" {
+				value = upstreamModel
+			}
+			if err := writer.WriteField(name, value); err != nil {
+				return body, headers
+			}
+			continue
+		}
+
+		newPart, err := writer.CreatePart(part.Header)
+		if err != nil {
+			return body, headers
+		}
+		if _, err := newPart.Write(partBody); err != nil {
+			return body, headers
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return body, headers
+	}
+
+	newHeaders := make(map[string]string, len(headers)+1)
+	for k, v := range headers {
+		newHeaders[k] = v
+	}
+	newHeaders["Content-Type"] = writer.FormDataContentType()
+	return buf.Bytes(), newHeaders
 }
 
 // replaceModelInResponse 替换响应中的模型名为别名

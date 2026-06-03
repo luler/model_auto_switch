@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +53,7 @@ type ModelHealth struct {
 	LastFailure      atomic.Int64 // 上次失败时间戳(秒)
 	LastCheckTime    atomic.Int64 // 上次健康检查时间戳(纳秒)
 	RecoveryAttempts atomic.Int32 // 连续恢复探测失败次数（用于退避计算）
+	lastFailurePath  atomic.Value // 上次失败的接口路径（用于恢复探测）
 	maxFailures      int          // 该模型的连续失败阈值
 	recoverMutex     sync.Mutex   // 恢复检查互斥锁，防止并发重复检查
 }
@@ -477,6 +479,11 @@ func (m *Manager) RecordSuccess(p *Provider, alias string, upstreamModel string)
 
 // RecordFailure 记录失败请求
 func (m *Manager) RecordFailure(p *Provider, alias string, upstreamModel string) {
+	m.RecordFailureWithPath(p, alias, upstreamModel, "")
+}
+
+// RecordFailureWithPath 记录失败请求，并保存失败接口用于恢复探测
+func (m *Manager) RecordFailureWithPath(p *Provider, alias string, upstreamModel string, path string) {
 	m.resetDailyCountersIfNeeded()
 	p.totalReqs.Add(1)
 
@@ -491,6 +498,9 @@ func (m *Manager) RecordFailure(p *Provider, alias string, upstreamModel string)
 	if health, exists := p.modelHealths[upstreamModel]; exists {
 		failures := health.FailureCount.Add(1)
 		health.LastFailure.Store(time.Now().Unix())
+		if path != "" {
+			health.lastFailurePath.Store(path)
+		}
 
 		if int(failures) >= health.maxFailures && health.Healthy.Load() {
 			health.Healthy.Store(false)
@@ -879,7 +889,76 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 		return
 	}
 
-	// 第二步：使用简单的 chat/completions 调用来验证模型可用性
+	// 第二步：根据上次失败接口选择轻量探测
+	if isImageFailurePath(recoveryPath(p, upstreamModel)) {
+		m.tryRecoverImageModel(p, upstreamModel)
+		return
+	}
+
+	m.tryRecoverChatModel(p, upstreamModel)
+}
+
+func recoveryPath(p *Provider, upstreamModel string) string {
+	if health, exists := p.modelHealths[upstreamModel]; exists {
+		if value := health.lastFailurePath.Load(); value != nil {
+			if path, ok := value.(string); ok {
+				return path
+			}
+		}
+	}
+	return ""
+}
+
+func isImageFailurePath(path string) bool {
+	return strings.HasPrefix(path, "/v1/images/")
+}
+
+func (m *Manager) tryRecoverImageModel(p *Provider, upstreamModel string) {
+	testCtx, testCancel := context.WithTimeout(context.Background(), time.Duration(p.Config.Timeout)*time.Second)
+	defer testCancel()
+
+	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","prompt":"a small cat","n":1,"size":"1024x1024"}`, upstreamModel))
+	testReq, err := http.NewRequestWithContext(testCtx, "POST", p.Config.BaseURL+"/v1/images/generations", bytes.NewReader(testReqBody))
+	if err != nil {
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: create image generations request failed: %v", p.Config.Name, upstreamModel, err))
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+		}
+		return
+	}
+
+	testReq.Header.Set("Authorization", "Bearer "+p.Config.APIKey)
+	testReq.Header.Set("Content-Type", "application/json")
+
+	testResp, err := p.httpClient.Do(testReq)
+	if err != nil {
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: image generations API failed: %v", p.Config.Name, upstreamModel, err))
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+		}
+		return
+	}
+	defer testResp.Body.Close()
+
+	if testResp.StatusCode == http.StatusOK || testResp.StatusCode == http.StatusBadRequest {
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.FailureCount.Store(0)
+			health.Healthy.Store(true)
+			health.RecoveryAttempts.Store(0)
+		}
+		log_helper.Info(fmt.Sprintf("Recovery check %s/%s: recovered by image generations (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
+	} else {
+		attempts := int32(0)
+		if health, exists := p.modelHealths[upstreamModel]; exists {
+			health.RecoveryAttempts.Add(1)
+			attempts = health.RecoveryAttempts.Load()
+		}
+		nextInterval := time.Duration(m.effectiveRecoveryInterval(attempts))
+		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: image generations returned %d, still unhealthy (attempts=%d, next check in ~%s)", p.Config.Name, upstreamModel, testResp.StatusCode, attempts, nextInterval))
+	}
+}
+
+func (m *Manager) tryRecoverChatModel(p *Provider, upstreamModel string) {
 	testCtx, testCancel := context.WithTimeout(context.Background(), time.Duration(p.Config.Timeout)*time.Second)
 	defer testCancel()
 
@@ -1172,7 +1251,7 @@ func (p *Provider) ProxyRequest(ctx context.Context, method, path string, body [
 	req.Header.Set("Authorization", "Bearer "+p.Config.APIKey)
 	req.Header.Set("Content-Type", "application/json")
 	for k, v := range headers {
-		if k != "Authorization" && k != "Host" {
+		if k != "Authorization" && k != "Host" && k != "Content-Length" {
 			req.Header.Set(k, v)
 		}
 	}
@@ -1193,7 +1272,7 @@ func (p *Provider) ProxyStreamRequest(ctx context.Context, path string, body []b
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	for k, v := range headers {
-		if k != "Authorization" && k != "Host" && k != "Accept" {
+		if k != "Authorization" && k != "Host" && k != "Accept" && k != "Content-Length" {
 			req.Header.Set(k, v)
 		}
 	}
