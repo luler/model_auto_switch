@@ -60,6 +60,10 @@ func InitOpenAIRouter(e *gin.Engine, manager *upstream.Manager, apiKeys []string
 	// Chat Completions
 	v1.POST("/chat/completions", ctrl.ChatCompletions)
 
+	// Images
+	v1.POST("/images/generations", ctrl.ImagesGenerations)
+	v1.POST("/images/edits", ctrl.ImagesEdits)
+
 	// Models
 	v1.GET("/models", ctrl.Models)
 	v1.GET("/models/:model", ctrl.GetModel)
