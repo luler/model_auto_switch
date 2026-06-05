@@ -332,6 +332,24 @@
             white-space: nowrap;
         }
 
+        .sort-header.active {
+            color: #4f46e5;
+        }
+
+        .sort-icon {
+            display: inline-block;
+            margin-left: 6px;
+            color: #a0aec0;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .sort-icon.active {
+            color: #4f46e5;
+            font-size: 18px;
+            transform: translateY(1px);
+        }
+
         tr:hover {
             background: #f8f9fa;
         }
@@ -834,9 +852,9 @@
                             <th>模型别名</th>
                             <th>上游模型</th>
                             <th>状态</th>
-                            <th>成功次数</th>
-                            <th>失败次数</th>
-                            <th>总请求</th>
+                            <th class="sort-header" :class="{active: healthSort.field === 'success_requests'}" @click="toggleHealthSort('success_requests')" style="cursor: pointer; user-select: none;">成功次数<span class="sort-icon" :class="{active: healthSort.field === 'success_requests'}">{{ sortArrow('success_requests') }}</span></th>
+                            <th class="sort-header" :class="{active: healthSort.field === 'failure_count'}" @click="toggleHealthSort('failure_count')" style="cursor: pointer; user-select: none;">失败次数<span class="sort-icon" :class="{active: healthSort.field === 'failure_count'}">{{ sortArrow('failure_count') }}</span></th>
+                            <th class="sort-header" :class="{active: healthSort.field === 'total_requests'}" @click="toggleHealthSort('total_requests')" style="cursor: pointer; user-select: none;">总请求<span class="sort-icon" :class="{active: healthSort.field === 'total_requests'}">{{ sortArrow('total_requests') }}</span></th>
                             <th>成功率</th>
                         </tr>
                         </thead>
@@ -1131,6 +1149,7 @@
                 },
                 healthCheckAllLoading: false,
                 checkingModels: [], // 正在检查的模型列表 [{provider_name, upstream_model}]
+                healthSort: {field: '', order: ''},
 
                 // 供应商配置
                 configLoading: false,
@@ -1438,6 +1457,7 @@
             },
             switchToLogs() {
                 this.activeTab = 'logs';
+                this.healthSort = {field: '', order: ''};
                 if (!this.logsContent) {
                     this.fetchLogs();
                 }
@@ -1492,10 +1512,12 @@
             },
             switchToHealth() {
                 this.activeTab = 'health';
+                this.healthSort = {field: '', order: ''};
                 this.fetchHealth();
             },
             switchToProviders() {
                 this.activeTab = 'providers';
+                this.healthSort = {field: '', order: ''};
                 this.fetchConfig();
             },
             async clearLogs() {
@@ -1532,6 +1554,14 @@
             },
             isChecking(providerName, upstreamModel) {
                 return this.checkingModels.some(m => m.provider_name === providerName && m.upstream_model === upstreamModel);
+            },
+            toggleHealthSort(field) {
+                const next = !this.healthSort.order || this.healthSort.field !== field ? 'desc' : (this.healthSort.order === 'desc' ? 'asc' : '');
+                this.healthSort = {field: next ? field : '', order: next};
+            },
+            sortArrow(field) {
+                if (this.healthSort.field !== field) return ' ↕';
+                return this.healthSort.order === 'desc' ? ' ↓' : (this.healthSort.order === 'asc' ? ' ↑' : ' ↕');
             },
             async checkSingleHealth(model) {
                 if (model.healthy) return;
@@ -1606,8 +1636,7 @@
                     });
                 });
 
-                // 排序：别名（自然排序）、优先级（小到大）、权重（大到小）
-                return allModels.sort((a, b) => {
+                const defaultSort = (a, b) => {
                     // 1. 按别名自然排序
                     const aliasA = (a.model_alias || '').toLowerCase();
                     const aliasB = (b.model_alias || '').toLowerCase();
@@ -1621,7 +1650,16 @@
                     const weightA = a.weight || 1;
                     const weightB = b.weight || 1;
                     return weightB - weightA;
-                });
+                };
+
+                if (this.healthSort.order) {
+                    const field = this.healthSort.field;
+                    const factor = this.healthSort.order === 'desc' ? -1 : 1;
+                    return allModels.sort((a, b) => ((a[field] || 0) - (b[field] || 0)) * factor || defaultSort(a, b));
+                }
+
+                // 排序：别名（自然排序）、优先级（小到大）、权重（大到小）
+                return allModels.sort(defaultSort);
             }
         }
     }).mount('#app');
