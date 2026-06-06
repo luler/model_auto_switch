@@ -1631,7 +1631,8 @@
                     (provider.model_healths || []).forEach(model => {
                         allModels.push({
                             ...model,
-                            provider_name: provider.name
+                            provider_name: provider.name,
+                            default_index: allModels.length
                         });
                     });
                 });
@@ -1649,7 +1650,7 @@
                     // 3. 按权重降序（大到小）
                     const weightA = a.weight || 1;
                     const weightB = b.weight || 1;
-                    return weightB - weightA;
+                    return weightB - weightA || a.default_index - b.default_index;
                 };
 
                 if (this.healthSort.order) {
