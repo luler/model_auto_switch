@@ -859,8 +859,8 @@
                         </tr>
                         </thead>
                         <tbody>
-                        <tr v-for="(model, idx) in sortedModelHealths"
-                            :key="model.provider_name + '-' + model.upstream_model">
+                        <tr v-for="model in sortedModelHealths"
+                            :key="model.provider_name + '-' + model.model_alias + '-' + model.upstream_model + '-' + model.default_index">
                             <td>{{ model.provider_name }}</td>
                             <td>{{ model.model_alias }}</td>
                             <td>{{ model.upstream_model }}</td>
