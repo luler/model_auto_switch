@@ -322,6 +322,7 @@
         th, td {
             padding: 15px 12px;
             text-align: left;
+            vertical-align: middle;
             border-bottom: 1px solid #eee;
         }
 
@@ -370,6 +371,13 @@
         .status-unhealthy {
             background: #f8d7da;
             color: #721c24;
+        }
+
+        .unhealthy-duration {
+            font-size: 11px;
+            color: #dc3545;
+            margin-top: 4px;
+            text-align: center;
         }
 
         .status-clickable {
@@ -851,7 +859,7 @@
                             <th>供应商</th>
                             <th>模型别名</th>
                             <th>上游模型</th>
-                            <th>状态</th>
+                            <th class="sort-header" :class="{active: healthSort.field === 'status'}" @click="toggleHealthSort('status')" style="cursor: pointer; user-select: none; text-align: center;">状态<span class="sort-icon" :class="{active: healthSort.field === 'status'}">{{ sortArrow('status') }}</span></th>
                             <th class="sort-header" :class="{active: healthSort.field === 'today_success_requests'}" @click="toggleHealthSort('today_success_requests')" style="cursor: pointer; user-select: none;">成功次数<span class="sort-icon" :class="{active: healthSort.field === 'today_success_requests'}">{{ sortArrow('today_success_requests') }}</span></th>
                             <th class="sort-header" :class="{active: healthSort.field === 'today_failure_count'}" @click="toggleHealthSort('today_failure_count')" style="cursor: pointer; user-select: none;">失败次数<span class="sort-icon" :class="{active: healthSort.field === 'today_failure_count'}">{{ sortArrow('today_failure_count') }}</span></th>
                             <th class="sort-header" :class="{active: healthSort.field === 'today_total_requests'}" @click="toggleHealthSort('today_total_requests')" style="cursor: pointer; user-select: none;">总请求<span class="sort-icon" :class="{active: healthSort.field === 'today_total_requests'}">{{ sortArrow('today_total_requests') }}</span></th>
@@ -864,13 +872,18 @@
                             <td>{{ model.provider_name }}</td>
                             <td>{{ model.model_alias }}</td>
                             <td>{{ model.upstream_model }}</td>
-                            <td>
+                            <td style="text-align:center;">
+                                <div style="display:inline-flex;flex-direction:column;align-items:center;">
                                         <span class="status-badge"
                                               :class="[model.healthy ? 'status-healthy' : 'status-unhealthy', {'status-clickable': !model.healthy, 'status-checking': isChecking(model.provider_name, model.upstream_model)}]"
                                               :title="model.healthy ? '' : '点击立即进行健康检测'"
                                               @click="checkSingleHealth(model)">
                                             {{ isChecking(model.provider_name, model.upstream_model) ? '检查中...' : (model.healthy ? '健康' : '异常') }}
                                         </span>
+                                        <div v-if="!model.healthy && model.unhealthy_since" class="unhealthy-duration">
+                                            {{ formatDuration(model.unhealthy_since) }}
+                                        </div>
+                                </div>
                             </td>
                             <td>
                                 <div class="metric-pair">
@@ -1563,6 +1576,22 @@
                 if (this.healthSort.field !== field) return ' ↕';
                 return this.healthSort.order === 'desc' ? ' ↓' : (this.healthSort.order === 'asc' ? ' ↑' : ' ↕');
             },
+            formatDuration(unhealthySince) {
+                if (!unhealthySince) return '';
+                const now = Math.floor(Date.now() / 1000);
+                let diff = now - unhealthySince;
+                if (diff < 0) diff = 0;
+                const days = Math.floor(diff / 86400);
+                const hours = Math.floor((diff % 86400) / 3600);
+                const minutes = Math.floor((diff % 3600) / 60);
+                const seconds = diff % 60;
+                let parts = [];
+                if (days > 0) parts.push(days + '天');
+                if (hours > 0) parts.push(hours + '小时');
+                if (minutes > 0) parts.push(minutes + '分钟');
+                if (days === 0) parts.push(seconds + '秒');
+                return parts.join('');
+            },
             async checkSingleHealth(model) {
                 if (model.healthy) return;
                 if (this.isChecking(model.provider_name, model.upstream_model)) return;
@@ -1656,6 +1685,16 @@
                 if (this.healthSort.order) {
                     const field = this.healthSort.field;
                     const factor = this.healthSort.order === 'desc' ? -1 : 1;
+                    if (field === 'status') {
+                        return allModels.sort((a, b) => {
+                            const now = Math.floor(Date.now() / 1000);
+                            // 异常时长：unhealthy_since > 0 则计算持续秒数，否则为0
+                            const durA = (!a.healthy && a.unhealthy_since) ? (now - a.unhealthy_since) : 0;
+                            const durB = (!b.healthy && b.unhealthy_since) ? (now - b.unhealthy_since) : 0;
+                            // desc（默认）：异常时间最长排最前面
+                            return (durA - durB) * factor || defaultSort(a, b);
+                        });
+                    }
                     return allModels.sort((a, b) => ((a[field] || 0) - (b[field] || 0)) * factor || defaultSort(a, b));
                 }
 

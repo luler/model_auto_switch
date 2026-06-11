@@ -53,6 +53,7 @@ type ModelHealth struct {
 	LastFailure      atomic.Int64 // 上次失败时间戳(秒)
 	LastCheckTime    atomic.Int64 // 上次健康检查时间戳(纳秒)
 	RecoveryAttempts atomic.Int32 // 连续恢复探测失败次数（用于退避计算）
+	UnhealthySince   atomic.Int64 // 开始异常的时间戳(秒)，健康时为0
 	lastFailurePath  atomic.Value // 上次失败的接口路径（用于恢复探测）
 	maxFailures      int          // 该模型的连续失败阈值
 	recoverMutex     sync.Mutex   // 恢复检查互斥锁，防止并发重复检查
@@ -86,6 +87,7 @@ type ModelHealthSnapshot struct {
 	LastFailure      int64  `json:"last_failure"`
 	LastCheckTime    int64  `json:"last_check_time"`
 	RecoveryAttempts int32  `json:"recovery_attempts"`
+	UnhealthySince   int64  `json:"unhealthy_since"`
 }
 
 // StatsSnapshotFile 模型统计持久化文件
@@ -126,6 +128,7 @@ type ProviderModelHealth struct {
 	ModelAlias        string  `json:"model_alias"`    // 模型别名
 	UpstreamModel     string  `json:"upstream_model"` // 上游模型名
 	Healthy           bool    `json:"healthy"`
+	UnhealthySince    int64   `json:"unhealthy_since"`     // 开始异常的时间戳(秒)，健康时为0
 	TodayFailureCount int32   `json:"today_failure_count"` // 今日失败请求数
 	FailureCount      int32   `json:"failure_count"`
 	TodaySuccessReqs  int64   `json:"today_success_requests"` // 今日成功请求数
@@ -472,6 +475,7 @@ func (m *Manager) RecordSuccess(p *Provider, alias string, upstreamModel string)
 		health.RecoveryAttempts.Store(0)
 		if !health.Healthy.Load() {
 			health.Healthy.Store(true)
+			health.UnhealthySince.Store(0)
 			log_helper.Info(fmt.Sprintf("Provider %s upstream model %s recovered and marked as healthy", p.Config.Name, upstreamModel))
 		}
 	}
@@ -504,6 +508,7 @@ func (m *Manager) RecordFailureWithPath(p *Provider, alias string, upstreamModel
 
 		if int(failures) >= health.maxFailures && health.Healthy.Load() {
 			health.Healthy.Store(false)
+			health.UnhealthySince.Store(time.Now().Unix())
 			log_helper.Warning(fmt.Sprintf("Provider %s upstream model %s marked as unhealthy after %d consecutive failures", p.Config.Name, upstreamModel, failures))
 		}
 	}
@@ -641,6 +646,7 @@ func (m *Manager) ExportHealthSnapshot() HealthSnapshotFile {
 				LastFailure:      health.LastFailure.Load(),
 				LastCheckTime:    health.LastCheckTime.Load(),
 				RecoveryAttempts: health.RecoveryAttempts.Load(),
+				UnhealthySince:   health.UnhealthySince.Load(),
 			})
 		}
 		p.mu.RUnlock()
@@ -717,6 +723,7 @@ func (m *Manager) ImportHealthSnapshot(snapshot HealthSnapshotFile) {
 		health.LastFailure.Store(item.LastFailure)
 		health.LastCheckTime.Store(item.LastCheckTime)
 		health.RecoveryAttempts.Store(item.RecoveryAttempts)
+		health.UnhealthySince.Store(item.UnhealthySince)
 	}
 }
 
@@ -945,6 +952,7 @@ func (m *Manager) tryRecoverImageModel(p *Provider, upstreamModel string) {
 			health.FailureCount.Store(0)
 			health.Healthy.Store(true)
 			health.RecoveryAttempts.Store(0)
+			health.UnhealthySince.Store(0)
 		}
 		log_helper.Info(fmt.Sprintf("Recovery check %s/%s: recovered by image generations (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
 	} else {
@@ -991,6 +999,7 @@ func (m *Manager) tryRecoverChatModel(p *Provider, upstreamModel string) {
 			health.FailureCount.Store(0)
 			health.Healthy.Store(true)
 			health.RecoveryAttempts.Store(0)
+			health.UnhealthySince.Store(0)
 		}
 		log_helper.Info(fmt.Sprintf("Recovery check %s/%s: recovered (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
 	} else {
@@ -1131,10 +1140,12 @@ func (m *Manager) GetStats() []ProviderStats {
 		for _, mm := range p.Config.ModelMappings {
 			// 获取健康状态（按 upstream 维度）
 			var healthy bool = true
+			var unhealthySince int64
 			if health, exists := p.modelHealths[mm.Upstream]; exists {
 				healthy = health.Healthy.Load()
 				if !healthy {
 					allModelsHealthy = false
+					unhealthySince = health.UnhealthySince.Load()
 				}
 			}
 
@@ -1166,6 +1177,7 @@ func (m *Manager) GetStats() []ProviderStats {
 				ModelAlias:        mm.Alias,
 				UpstreamModel:     mm.Upstream,
 				Healthy:           healthy,
+				UnhealthySince:    unhealthySince,
 				TodayFailureCount: int32(modelTodayFailure),
 				FailureCount:      int32(modelFailure),
 				TodaySuccessReqs:  modelTodaySuccess,
