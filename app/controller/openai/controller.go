@@ -320,7 +320,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		// 检查客户端是否已断开连接，避免无意义的重试
 		if ctx.Request.Context().Err() != nil {
 			lastErr = ctx.Request.Context().Err()
-			log_helper.Info(fmt.Sprintf("[%s] %s client disconnected, stopping retries", reqID, aliasModel))
+			log_helper.Warning(fmt.Sprintf("[%s] %s client disconnected, stopping retries", reqID, aliasModel))
 			break
 		}
 
@@ -339,7 +339,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Info(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
@@ -355,7 +355,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Info(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
@@ -412,7 +412,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		// 检查客户端是否已断开连接，避免无意义的重试
 		if ctx.Request.Context().Err() != nil {
 			lastErr = ctx.Request.Context().Err()
-			log_helper.Info(fmt.Sprintf("[%s] %s client disconnected, stopping retries", reqID, aliasModel))
+			log_helper.Warning(fmt.Sprintf("[%s] %s client disconnected, stopping retries", reqID, aliasModel))
 			break
 		}
 
@@ -427,7 +427,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Info(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
 			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
