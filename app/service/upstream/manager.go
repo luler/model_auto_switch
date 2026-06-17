@@ -67,40 +67,24 @@ type ModelStats struct {
 	TotalFailure atomic.Int64 // 总失败请求数
 }
 
-// ModelStatsSnapshot 模型统计快照
+// ModelStatsSnapshot 模型统计快照（含健康状态，统一落盘）
 type ModelStatsSnapshot struct {
-	ProviderName  string `json:"provider_name"`
-	ModelAlias    string `json:"model_alias"`
-	UpstreamModel string `json:"upstream_model"`
-	TodaySuccess  int64  `json:"today_success"`
-	TodayFailure  int64  `json:"today_failure"`
-	TotalSuccess  int64  `json:"total_success"`
-	TotalFailure  int64  `json:"total_failure"`
+	ProviderName   string `json:"provider_name"`
+	ModelAlias     string `json:"model_alias"`
+	UpstreamModel  string `json:"upstream_model"`
+	TodaySuccess   int64  `json:"today_success"`
+	TodayFailure   int64  `json:"today_failure"`
+	TotalSuccess   int64  `json:"total_success"`
+	TotalFailure   int64  `json:"total_failure"`
+	Healthy        bool   `json:"healthy"`         // 健康状态
+	UnhealthySince int64  `json:"unhealthy_since"` // 开始异常的时间戳(秒)，健康时为0
 }
 
-// ModelHealthSnapshot 模型健康状态快照
-type ModelHealthSnapshot struct {
-	ProviderName     string `json:"provider_name"`
-	UpstreamModel    string `json:"upstream_model"`
-	Healthy          bool   `json:"healthy"`
-	FailureCount     int32  `json:"failure_count"`
-	LastFailure      int64  `json:"last_failure"`
-	LastCheckTime    int64  `json:"last_check_time"`
-	RecoveryAttempts int32  `json:"recovery_attempts"`
-	UnhealthySince   int64  `json:"unhealthy_since"`
-}
-
-// StatsSnapshotFile 模型统计持久化文件
+// StatsSnapshotFile 模型统计持久化文件（统计 + 健康状态合并落盘）
 type StatsSnapshotFile struct {
 	Date    string               `json:"date"`
 	SavedAt string               `json:"saved_at"`
 	Models  []ModelStatsSnapshot `json:"models"`
-}
-
-// HealthSnapshotFile 模型健康状态快照
-type HealthSnapshotFile struct {
-	SavedAt string                `json:"saved_at"`
-	Models  []ModelHealthSnapshot `json:"models"`
 }
 
 // Provider 上游供应商
@@ -603,14 +587,22 @@ func (m *Manager) buildStatsSnapshot() StatsSnapshotFile {
 			if !exists {
 				continue
 			}
+			// 健康状态按 upstream 维度取（同一 upstream 多 alias 共享）
+			healthy, unhealthySince := true, int64(0)
+			if health, exists := p.modelHealths[mm.Upstream]; exists {
+				healthy = health.Healthy.Load()
+				unhealthySince = health.UnhealthySince.Load()
+			}
 			snapshot.Models = append(snapshot.Models, ModelStatsSnapshot{
-				ProviderName:  p.Config.Name,
-				ModelAlias:    mm.Alias,
-				UpstreamModel: mm.Upstream,
-				TodaySuccess:  stats.TodaySuccess.Load(),
-				TodayFailure:  stats.TodayFailure.Load(),
-				TotalSuccess:  stats.TotalSuccess.Load(),
-				TotalFailure:  stats.TotalFailure.Load(),
+				ProviderName:   p.Config.Name,
+				ModelAlias:     mm.Alias,
+				UpstreamModel:  mm.Upstream,
+				TodaySuccess:   stats.TodaySuccess.Load(),
+				TodayFailure:   stats.TodayFailure.Load(),
+				TotalSuccess:   stats.TotalSuccess.Load(),
+				TotalFailure:   stats.TotalFailure.Load(),
+				Healthy:        healthy,
+				UnhealthySince: unhealthySince,
 			})
 		}
 		p.mu.RUnlock()
@@ -619,43 +611,12 @@ func (m *Manager) buildStatsSnapshot() StatsSnapshotFile {
 	return snapshot
 }
 
-// ExportStatsSnapshot 导出模型统计快照
+// ExportStatsSnapshot 导出模型统计快照（含健康状态）
 func (m *Manager) ExportStatsSnapshot() StatsSnapshotFile {
 	return m.buildStatsSnapshot()
 }
 
-// ExportHealthSnapshot 导出模型健康状态快照
-func (m *Manager) ExportHealthSnapshot() HealthSnapshotFile {
-	m.mu.RLock()
-	providers := append([]*Provider(nil), m.providers...)
-	m.mu.RUnlock()
-
-	snapshot := HealthSnapshotFile{
-		SavedAt: time.Now().Format(time.RFC3339),
-		Models:  make([]ModelHealthSnapshot, 0),
-	}
-
-	for _, p := range providers {
-		p.mu.RLock()
-		for upstreamModel, health := range p.modelHealths {
-			snapshot.Models = append(snapshot.Models, ModelHealthSnapshot{
-				ProviderName:     p.Config.Name,
-				UpstreamModel:    upstreamModel,
-				Healthy:          health.Healthy.Load(),
-				FailureCount:     health.FailureCount.Load(),
-				LastFailure:      health.LastFailure.Load(),
-				LastCheckTime:    health.LastCheckTime.Load(),
-				RecoveryAttempts: health.RecoveryAttempts.Load(),
-				UnhealthySince:   health.UnhealthySince.Load(),
-			})
-		}
-		p.mu.RUnlock()
-	}
-
-	return snapshot
-}
-
-// ImportStatsSnapshot 导入模型统计快照，仅恢复当前配置内的模型
+// ImportStatsSnapshot 导入模型统计快照（含健康状态），仅恢复当前配置内的模型
 func (m *Manager) ImportStatsSnapshot(snapshot StatsSnapshotFile) {
 	m.resetDailyCountersIfNeeded()
 	currentDate := currentStatsDate()
@@ -668,63 +629,46 @@ func (m *Manager) ImportStatsSnapshot(snapshot StatsSnapshotFile) {
 	}
 	m.mu.RUnlock()
 
+	// health 按 upstream 维度去重处理：只恢复一次
+	restoredHealth := make(map[string]bool)
+
 	for _, item := range snapshot.Models {
 		p, exists := allowedProviders[item.ProviderName]
 		if !exists {
 			continue
 		}
 
+		// 恢复统计（alias+upstream 维度）
 		key := statsKey(item.ModelAlias, item.UpstreamModel)
 		p.mu.RLock()
 		stats, exists := p.modelStats[key]
 		p.mu.RUnlock()
-		if !exists {
-			continue
+		if exists {
+			stats.TotalSuccess.Store(item.TotalSuccess)
+			stats.TotalFailure.Store(item.TotalFailure)
+			if restoreToday {
+				stats.TodaySuccess.Store(item.TodaySuccess)
+				stats.TodayFailure.Store(item.TodayFailure)
+			} else {
+				stats.TodaySuccess.Store(0)
+				stats.TodayFailure.Store(0)
+			}
 		}
 
-		stats.TotalSuccess.Store(item.TotalSuccess)
-		stats.TotalFailure.Store(item.TotalFailure)
-		if restoreToday {
-			stats.TodaySuccess.Store(item.TodaySuccess)
-			stats.TodayFailure.Store(item.TodayFailure)
-		} else {
-			stats.TodaySuccess.Store(0)
-			stats.TodayFailure.Store(0)
+		// 恢复健康状态（upstream 维度，去重）
+		if !restoredHealth[item.ProviderName+"|"+item.UpstreamModel] {
+			p.mu.RLock()
+			health, exists := p.modelHealths[item.UpstreamModel]
+			p.mu.RUnlock()
+			if exists {
+				health.Healthy.Store(item.Healthy)
+				health.UnhealthySince.Store(item.UnhealthySince)
+			}
+			restoredHealth[item.ProviderName+"|"+item.UpstreamModel] = true
 		}
 	}
 
 	m.currentStatsDate.Store(currentDate)
-}
-
-// ImportHealthSnapshot 导入模型健康状态快照，仅恢复当前配置内的模型
-func (m *Manager) ImportHealthSnapshot(snapshot HealthSnapshotFile) {
-	allowedProviders := make(map[string]*Provider, len(m.providers))
-	m.mu.RLock()
-	for _, p := range m.providers {
-		allowedProviders[p.Config.Name] = p
-	}
-	m.mu.RUnlock()
-
-	for _, item := range snapshot.Models {
-		p, exists := allowedProviders[item.ProviderName]
-		if !exists {
-			continue
-		}
-
-		p.mu.RLock()
-		health, exists := p.modelHealths[item.UpstreamModel]
-		p.mu.RUnlock()
-		if !exists {
-			continue
-		}
-
-		health.Healthy.Store(item.Healthy)
-		health.FailureCount.Store(item.FailureCount)
-		health.LastFailure.Store(item.LastFailure)
-		health.LastCheckTime.Store(item.LastCheckTime)
-		health.RecoveryAttempts.Store(item.RecoveryAttempts)
-		health.UnhealthySince.Store(item.UnhealthySince)
-	}
 }
 
 // LoadStatsFromFile 从JSON文件恢复模型统计
@@ -765,7 +709,7 @@ func (m *Manager) SaveStatsToFile() error {
 	return os.WriteFile(m.statsPersistPath, data, 0644)
 }
 
-// startStatsPersistence 启动模型统计持久化
+// startStatsPersistence 启动模型统计持久化（统计 + 健康状态一并落盘）
 func (m *Manager) startStatsPersistence() {
 	defer m.workerWg.Done()
 
