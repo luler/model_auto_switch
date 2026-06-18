@@ -320,7 +320,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		// 检查客户端是否已断开连接，避免无意义的重试
 		if ctx.Request.Context().Err() != nil {
 			lastErr = ctx.Request.Context().Err()
-			log_helper.Warning(fmt.Sprintf("[%s] %s client disconnected, stopping retries", reqID, aliasModel))
+			log_helper.Warning(fmt.Sprintf("🔌 [%s] %s client disconnected, stopping retries", reqID, aliasModel))
 			break
 		}
 
@@ -339,10 +339,10 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("🔌 [%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -355,10 +355,10 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("🔌 [%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -366,7 +366,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		// 检查HTTP状态码 - 非200都视为失败
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -378,7 +378,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		if i > 0 {
 			attemptInfo += "(retry)"
 		}
-		log_helper.Info(fmt.Sprintf("[%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		log_helper.Info(fmt.Sprintf("✅ [%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		ctx.Data(resp.StatusCode, "application/json", respBody)
 		return
 	}
@@ -389,7 +389,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 	}
 
 	// 所有供应商都失败
-	log_helper.Error(fmt.Sprintf("[%s] %s all providers failed: %v, tried: %v", reqID, aliasModel, lastErr, triedProviders))
+	log_helper.Error(fmt.Sprintf("⛔ [%s] %s all providers failed: %v, tried: %v", reqID, aliasModel, lastErr, triedProviders))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
 }
 
@@ -412,7 +412,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		// 检查客户端是否已断开连接，避免无意义的重试
 		if ctx.Request.Context().Err() != nil {
 			lastErr = ctx.Request.Context().Err()
-			log_helper.Warning(fmt.Sprintf("[%s] %s client disconnected, stopping retries", reqID, aliasModel))
+			log_helper.Warning(fmt.Sprintf("🔌 [%s] %s client disconnected, stopping retries", reqID, aliasModel))
 			break
 		}
 
@@ -427,10 +427,10 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("🔌 [%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -439,7 +439,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -492,7 +492,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		if streamErr != nil {
 			resp.Body.Close()
 			lastErr = streamErr
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -501,7 +501,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		if validateChatContent && hasDone && !hasValidContent {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("empty stream: no content generated")
-			log_helper.Warning(fmt.Sprintf("[%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -512,13 +512,13 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		if i > 0 {
 			attemptInfo += "(retry)"
 		}
-		log_helper.Info(fmt.Sprintf("[%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		log_helper.Info(fmt.Sprintf("✅ [%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		c.streamResponseWithBufferedLines(ctx, resp, reader, bufferedLines, pm.Mapping.Upstream, aliasModel)
 		return
 	}
 
 	// 所有供应商都失败
-	log_helper.Error(fmt.Sprintf("[%s] %s %s all providers failed: %v, tried: %v", reqID, aliasModel, operation, lastErr, triedProviders))
+	log_helper.Error(fmt.Sprintf("⛔ [%s] %s %s all providers failed: %v, tried: %v", reqID, aliasModel, operation, lastErr, triedProviders))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
 }
 

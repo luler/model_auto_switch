@@ -280,7 +280,7 @@ func (c *AdminController) SaveConfig(ctx *gin.Context) {
 		return
 	}
 
-	log_helper.Info("配置已更新并重载")
+	log_helper.Info("⚙️ 配置已更新并重载")
 	response_helper.Success(ctx, "保存成功")
 }
 
@@ -507,7 +507,7 @@ func (c *AdminController) ClearLogs(ctx *gin.Context) {
 		return
 	}
 
-	log_helper.Info("日志文件已清空")
+	log_helper.Info("⚙️ 日志文件已清空")
 	response_helper.Success(ctx, "清空成功")
 }
 

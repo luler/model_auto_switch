@@ -460,7 +460,7 @@ func (m *Manager) RecordSuccess(p *Provider, alias string, upstreamModel string)
 		if !health.Healthy.Load() {
 			health.Healthy.Store(true)
 			health.UnhealthySince.Store(0)
-			log_helper.Info(fmt.Sprintf("Provider %s upstream model %s recovered and marked as healthy", p.Config.Name, upstreamModel))
+			log_helper.Info(fmt.Sprintf("💚 Provider %s upstream model %s recovered and marked as healthy", p.Config.Name, upstreamModel))
 		}
 	}
 }
@@ -493,7 +493,7 @@ func (m *Manager) RecordFailureWithPath(p *Provider, alias string, upstreamModel
 		if int(failures) >= health.maxFailures && health.Healthy.Load() {
 			health.Healthy.Store(false)
 			health.UnhealthySince.Store(time.Now().Unix())
-			log_helper.Warning(fmt.Sprintf("Provider %s upstream model %s marked as unhealthy after %d consecutive failures", p.Config.Name, upstreamModel, failures))
+			log_helper.Warning(fmt.Sprintf("🔴 Provider %s upstream model %s marked as unhealthy after %d consecutive failures", p.Config.Name, upstreamModel, failures))
 		}
 	}
 }
@@ -722,7 +722,7 @@ func (m *Manager) startStatsPersistence() {
 			return
 		case <-ticker.C:
 			if err := m.SaveStatsToFile(); err != nil {
-				log_helper.Warning(fmt.Sprintf("Save model stats failed: %v", err))
+				log_helper.Warning(fmt.Sprintf("💾 Save model stats failed: %v", err))
 			}
 		}
 	}
@@ -778,7 +778,7 @@ func (m *Manager) checkAndRecover() {
 		return
 	}
 
-	log_helper.Info(fmt.Sprintf("Health check: %d unhealthy models: %v", len(unhealthyModels), unhealthyModels))
+	log_helper.Info(fmt.Sprintf("🩺 Health check: %d unhealthy models: %v", len(unhealthyModels), unhealthyModels))
 
 	for _, p := range providers {
 		p.mu.RLock()
@@ -814,7 +814,7 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 
 	req, err := http.NewRequestWithContext(ctx, "GET", p.Config.BaseURL+"/v1/models", nil)
 	if err != nil {
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: create request failed: %v", p.Config.Name, upstreamModel, err))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: create request failed: %v", p.Config.Name, upstreamModel, err))
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.RecoveryAttempts.Add(1)
 		}
@@ -824,7 +824,7 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: models API failed: %v", p.Config.Name, upstreamModel, err))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: models API failed: %v", p.Config.Name, upstreamModel, err))
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.RecoveryAttempts.Add(1)
 		}
@@ -833,7 +833,7 @@ func (m *Manager) tryRecoverModel(p *Provider, upstreamModel string) {
 	resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: models API returned %d", p.Config.Name, upstreamModel, resp.StatusCode))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: models API returned %d", p.Config.Name, upstreamModel, resp.StatusCode))
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.RecoveryAttempts.Add(1)
 		}
@@ -871,7 +871,7 @@ func (m *Manager) tryRecoverImageModel(p *Provider, upstreamModel string) {
 	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","prompt":"a small cat","n":1,"size":"1024x1024"}`, upstreamModel))
 	testReq, err := http.NewRequestWithContext(testCtx, "POST", p.Config.BaseURL+"/v1/images/generations", bytes.NewReader(testReqBody))
 	if err != nil {
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: create image generations request failed: %v", p.Config.Name, upstreamModel, err))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: create image generations request failed: %v", p.Config.Name, upstreamModel, err))
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.RecoveryAttempts.Add(1)
 		}
@@ -883,7 +883,7 @@ func (m *Manager) tryRecoverImageModel(p *Provider, upstreamModel string) {
 
 	testResp, err := p.httpClient.Do(testReq)
 	if err != nil {
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: image generations API failed: %v", p.Config.Name, upstreamModel, err))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: image generations API failed: %v", p.Config.Name, upstreamModel, err))
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.RecoveryAttempts.Add(1)
 		}
@@ -898,7 +898,7 @@ func (m *Manager) tryRecoverImageModel(p *Provider, upstreamModel string) {
 			health.RecoveryAttempts.Store(0)
 			health.UnhealthySince.Store(0)
 		}
-		log_helper.Info(fmt.Sprintf("Recovery check %s/%s: recovered by image generations (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
+		log_helper.Info(fmt.Sprintf("💚 Recovery check %s/%s: recovered by image generations (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
 	} else {
 		attempts := int32(0)
 		if health, exists := p.modelHealths[upstreamModel]; exists {
@@ -906,7 +906,7 @@ func (m *Manager) tryRecoverImageModel(p *Provider, upstreamModel string) {
 			attempts = health.RecoveryAttempts.Load()
 		}
 		nextInterval := time.Duration(m.effectiveRecoveryInterval(attempts))
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: image generations returned %d, still unhealthy (attempts=%d, next check in ~%s)", p.Config.Name, upstreamModel, testResp.StatusCode, attempts, nextInterval))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: image generations returned %d, still unhealthy (attempts=%d, next check in ~%s)", p.Config.Name, upstreamModel, testResp.StatusCode, attempts, nextInterval))
 	}
 }
 
@@ -917,7 +917,7 @@ func (m *Manager) tryRecoverChatModel(p *Provider, upstreamModel string) {
 	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`, upstreamModel))
 	testReq, err := http.NewRequestWithContext(testCtx, "POST", p.Config.BaseURL+"/v1/chat/completions", bytes.NewReader(testReqBody))
 	if err != nil {
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: create completions request failed: %v", p.Config.Name, upstreamModel, err))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: create completions request failed: %v", p.Config.Name, upstreamModel, err))
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.RecoveryAttempts.Add(1)
 		}
@@ -929,7 +929,7 @@ func (m *Manager) tryRecoverChatModel(p *Provider, upstreamModel string) {
 
 	testResp, err := p.httpClient.Do(testReq)
 	if err != nil {
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: completions API failed: %v", p.Config.Name, upstreamModel, err))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: completions API failed: %v", p.Config.Name, upstreamModel, err))
 		if health, exists := p.modelHealths[upstreamModel]; exists {
 			health.RecoveryAttempts.Add(1)
 		}
@@ -945,7 +945,7 @@ func (m *Manager) tryRecoverChatModel(p *Provider, upstreamModel string) {
 			health.RecoveryAttempts.Store(0)
 			health.UnhealthySince.Store(0)
 		}
-		log_helper.Info(fmt.Sprintf("Recovery check %s/%s: recovered (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
+		log_helper.Info(fmt.Sprintf("💚 Recovery check %s/%s: recovered (status %d)", p.Config.Name, upstreamModel, testResp.StatusCode))
 	} else {
 		attempts := int32(0)
 		if health, exists := p.modelHealths[upstreamModel]; exists {
@@ -953,7 +953,7 @@ func (m *Manager) tryRecoverChatModel(p *Provider, upstreamModel string) {
 			attempts = health.RecoveryAttempts.Load()
 		}
 		nextInterval := time.Duration(m.effectiveRecoveryInterval(attempts))
-		log_helper.Warning(fmt.Sprintf("Recovery check %s/%s: completions returned %d, still unhealthy (attempts=%d, next check in ~%s)", p.Config.Name, upstreamModel, testResp.StatusCode, attempts, nextInterval))
+		log_helper.Warning(fmt.Sprintf("🔍 Recovery check %s/%s: completions returned %d, still unhealthy (attempts=%d, next check in ~%s)", p.Config.Name, upstreamModel, testResp.StatusCode, attempts, nextInterval))
 	}
 }
 
@@ -1047,7 +1047,7 @@ func (m *Manager) Stop() {
 		close(m.stopChan)
 		m.workerWg.Wait()
 		if err := m.SaveStatsToFile(); err != nil {
-			log_helper.Warning(fmt.Sprintf("Final save model stats failed: %v", err))
+			log_helper.Warning(fmt.Sprintf("💾 Final save model stats failed: %v", err))
 		}
 	})
 }
