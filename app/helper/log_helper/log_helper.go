@@ -24,7 +24,7 @@ func (f *emojiFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 
 	// 级别填充到固定宽度，保证各行列对齐
 	levelTag := fmt.Sprintf("%-5s", strings.ToUpper(entry.Level.String()))
-	emoji := levelEmoji(entry.Level)
+	emoji := categoryEmoji(entry.Message, entry.Level)
 
 	// 拼接附加字段（WithField），避免信息丢失
 	var fieldStr string
@@ -40,7 +40,42 @@ func (f *emojiFormatter) Format(entry *logrus.Entry) ([]byte, error) {
 		entry.Time.Format(ts), levelTag, emoji, entry.Message, fieldStr)), nil
 }
 
-// levelEmoji 按日志级别返回对应的 Emoji
+// categoryEmoji 按日志消息的业务类别返回 Emoji，便于一眼区分不同类型的事件。
+// 优先按消息内容（关键字）匹配，匹配不到时回退到按日志级别。
+func categoryEmoji(msg string, level logrus.Level) string {
+	switch {
+	// 客户端主动断开
+	case strings.Contains(msg, "client disconnected"):
+		return "🔌"
+	// 所有供应商都失败（请求彻底失败）
+	case strings.Contains(msg, "all providers failed"):
+		return "⛔"
+	// 巡检：恢复检查（探测不健康模型是否恢复）
+	case strings.Contains(msg, "Recovery check"):
+		return "🔍"
+	// 巡检：健康检查汇总
+	case strings.Contains(msg, "Health check"):
+		return "🩺"
+	// 模型恢复健康
+	case strings.Contains(msg, "recovered") || strings.Contains(msg, "marked as healthy"):
+		return "💚"
+	// 模型被标记为不健康
+	case strings.Contains(msg, "marked as unhealthy"):
+		return "🔴"
+	// 单次请求/重试失败
+	case strings.Contains(msg, "failed"):
+		return "❌"
+	// 请求成功路由到上游（唯一含 " -> "）
+	case strings.Contains(msg, " -> "):
+		return "✅"
+	// 配置 / 日志等管理操作
+	case strings.Contains(msg, "配置") || strings.Contains(msg, "日志"):
+		return "⚙️"
+	}
+	return levelEmoji(level)
+}
+
+// levelEmoji 按日志级别返回兜底 Emoji（业务类别未命中时使用）
 func levelEmoji(level logrus.Level) string {
 	switch level {
 	case logrus.PanicLevel, logrus.FatalLevel:
@@ -50,9 +85,9 @@ func levelEmoji(level logrus.Level) string {
 	case logrus.WarnLevel:
 		return "⚠️"
 	case logrus.InfoLevel:
-		return "✅"
+		return "ℹ️"
 	case logrus.DebugLevel:
-		return "🔍"
+		return "🔧"
 	case logrus.TraceLevel:
 		return "🔬"
 	default:
