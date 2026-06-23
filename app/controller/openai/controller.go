@@ -819,9 +819,20 @@ func detectStreamError(line []byte) error {
 
 // isValidStreamChunk 检测是否是有效的流数据chunk（包含实际内容）
 func isValidStreamChunk(line []byte) bool {
-	// 快速检测：检查是否包含实际内容的特征
-	// 有效chunk通常包含 "content":" 或 "role":"
-	return bytes.Contains(line, []byte(`"content":"`)) || bytes.Contains(line, []byte(`"role":"`))
+	// 检查 "content" 字段：非空才有效（空字符串 "" 紧跟 "，非空首字符不可能是 "）
+	if contentIdx := bytes.Index(line, []byte(`"content":"`)); contentIdx != -1 {
+		contentStart := contentIdx + len(`"content":"`)
+		return contentStart < len(line) && line[contentStart] != '"'
+	}
+
+	// 检查 "reasoning_content" 字段：非空才有效
+	if reasoningIdx := bytes.Index(line, []byte(`"reasoning_content":"`)); reasoningIdx != -1 {
+		reasoningStart := reasoningIdx + len(`"reasoning_content":"`)
+		return reasoningStart < len(line) && line[reasoningStart] != '"'
+	}
+
+	// 无 content 和 reasoning_content，但含 role（首条角色声明），视为有效
+	return bytes.Contains(line, []byte(`"role":"`))
 }
 
 // streamResponseWithBufferedLines 流式传输响应（包含已缓冲的行）
