@@ -452,8 +452,8 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		hasValidContent := false
 		hasDone := false
 
-		// 最多预读取3行进行错误检测
-		for j := 0; j < 3; j++ {
+		// 最多预读取x行进行错误检测，检测成功会提前退出，不是每次都循环x次
+		for j := 0; j < 5; j++ {
 			line, err := reader.ReadBytes('\n')
 			if err != nil {
 				if err == io.EOF && len(line) > 0 {
@@ -482,11 +482,12 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 				break
 			}
 
-			// 如果遇到有实际内容的chunk（非空choices），说明流正常，停止预读
-			if isValidStreamChunk(line) {
+			// 如果遇到有实际内容的chunk（非空content/reasoning_content），说明流正常，停止预读
+			if hasNonEmptyStreamContent(line) {
 				hasValidContent = true
 				break
 			}
+			// role行或空content行不算有效内容，继续预读下一行
 		}
 
 		if streamErr != nil {
@@ -817,8 +818,10 @@ func detectStreamError(line []byte) error {
 	return nil
 }
 
-// isValidStreamChunk 检测是否是有效的流数据chunk（包含实际内容）
-func isValidStreamChunk(line []byte) bool {
+// hasNonEmptyStreamContent 检测流数据chunk是否包含非空的实际内容
+// 返回 true：content/reasoning_content 非空
+// 返回 false：只有 role（首条角色声明）、content 为空字符串、或无内容字段
+func hasNonEmptyStreamContent(line []byte) bool {
 	// 检查 "content" 字段：非空才有效（空字符串 "" 紧跟 "，非空首字符不可能是 "）
 	if contentIdx := bytes.Index(line, []byte(`"content":"`)); contentIdx != -1 {
 		contentStart := contentIdx + len(`"content":"`)
@@ -831,8 +834,7 @@ func isValidStreamChunk(line []byte) bool {
 		return reasoningStart < len(line) && line[reasoningStart] != '"'
 	}
 
-	// 无 content 和 reasoning_content，但含 role（首条角色声明），视为有效
-	return bytes.Contains(line, []byte(`"role":"`))
+	return false
 }
 
 // streamResponseWithBufferedLines 流式传输响应（包含已缓冲的行）
