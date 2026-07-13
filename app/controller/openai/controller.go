@@ -422,21 +422,45 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 
 		reqBody, reqHeaders := processor(body, headers, pm, aliasModel)
 
-		resp, err := pm.Provider.ProxyStreamRequest(ctx.Request.Context(), upstreamPath, reqBody, reqHeaders)
+		// 首字节超时：仅覆盖"发起到首个有效 chunk"的时间，拿到后解除，后续流式读取不受限。
+		// 用 WithCancel + AfterFunc 而非 WithTimeout：WithTimeout 的 deadline 无法事后解除，会切到正常的长流；
+		// AfterFunc 到期才 cancel，首字节到达后 Stop 即可解除、ctx 保持存活、resp.Body 可继续读取。
+		// 复用 provider.timeout；timeout=0 表示不限（保持原行为）。
+		firstByteCtx, cancelFirstByte := context.WithCancel(ctx.Request.Context())
+		var firstByteTimer *time.Timer
+		if fbTimeout := time.Duration(pm.Provider.Config.Timeout) * time.Second; fbTimeout > 0 {
+			firstByteTimer = time.AfterFunc(fbTimeout, cancelFirstByte)
+		}
+		firstByteTimedOut := func() bool { return firstByteCtx.Err() != nil && ctx.Request.Context().Err() == nil } // 子ctx已取消且父ctx存活=首字节超时（区别于客户端断开）
+		releaseFirstByte := func() {                                                                                // 释放首字节超时资源（停计时器 + cancel ctx）
+			if firstByteTimer != nil {
+				firstByteTimer.Stop()
+			}
+			cancelFirstByte()
+		}
+
+		resp, err := pm.Provider.ProxyStreamRequest(firstByteCtx, upstreamPath, reqBody, reqHeaders)
 		if err != nil {
-			lastErr = err
+			releaseFirstByte()
+			// 首字节超时（非客户端断开）统一成 lastErr，复用下方 failover 逻辑
+			if firstByteTimedOut() {
+				lastErr = fmt.Errorf("first-byte timeout (%ds)", pm.Provider.Config.Timeout)
+			} else {
+				lastErr = err
+			}
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
 				log_helper.Warning(fmt.Sprintf("🔌 [%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
 
 		// 检查HTTP状态码 - 非200都视为失败
 		if resp.StatusCode != http.StatusOK {
+			releaseFirstByte()
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
 			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
@@ -456,6 +480,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		for j := 0; j < 5; j++ {
 			line, err := reader.ReadBytes('\n')
 			if err != nil {
+				// 首字节超时（ctx 被 cancel）会在这里表现为读取错误，跳出后由下方统一判定
 				if err == io.EOF && len(line) > 0 {
 					bufferedLines = append(bufferedLines, line)
 					if detectErr := detectStreamError(line); detectErr != nil {
@@ -490,7 +515,18 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			// role行或空content行不算有效内容，继续预读下一行
 		}
 
+		// 首字节超时：预读期间一直没拿到有效 chunk 就被 timer 中断
+		if firstByteTimedOut() {
+			releaseFirstByte()
+			resp.Body.Close()
+			lastErr = fmt.Errorf("first-byte timeout (%ds)", pm.Provider.Config.Timeout)
+			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
+			continue
+		}
+
 		if streamErr != nil {
+			releaseFirstByte()
 			resp.Body.Close()
 			lastErr = streamErr
 			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
@@ -500,6 +536,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 
 		// 检测空流（HTTP 200但没有任何实际内容）
 		if validateChatContent && hasDone && !hasValidContent {
+			releaseFirstByte()
 			resp.Body.Close()
 			lastErr = fmt.Errorf("empty stream: no content generated")
 			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
@@ -507,7 +544,10 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			continue
 		}
 
-		// 成功，开始流式传输
+		// 成功：首字节已到达，停止计时器（不要 cancel，resp.Body 仍绑定在 firstByteCtx 上需继续读取）
+		if firstByteTimer != nil {
+			firstByteTimer.Stop()
+		}
 		c.getManager().RecordSuccess(pm.Provider, aliasModel, pm.Mapping.Upstream)
 		attemptInfo := fmt.Sprintf("#%d", i+1)
 		if i > 0 {
@@ -515,6 +555,8 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		}
 		log_helper.Info(fmt.Sprintf("✅ [%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		c.streamResponseWithBufferedLines(ctx, resp, reader, bufferedLines, pm.Mapping.Upstream, aliasModel)
+		// 流转发已结束，释放首字节超时 ctx 资源（resp.Body 已由 streamResponseWithBufferedLines 内部关闭）
+		cancelFirstByte()
 		return
 	}
 
