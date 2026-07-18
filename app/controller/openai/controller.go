@@ -28,6 +28,30 @@ func generateRequestID() string {
 	return hex.EncodeToString(b)
 }
 
+// formatDuration 将耗时格式化为最多两个时间单位的整数易读形式（500ms / 1s500ms / 1m35s / 2h30m），
+// 不使用小数；并左填充至固定宽度 8，使日志中的耗时列对齐（最长为 59s999ms / 59m59s / 99h59m，超出则不再填充）。
+func formatDuration(d time.Duration) string {
+	var s string
+	switch {
+	case d < time.Second:
+		s = fmt.Sprintf("%dms", d.Milliseconds())
+	case d < time.Minute:
+		totalMs := int(d.Milliseconds())
+		sec := totalMs / 1000
+		ms := totalMs % 1000
+		if ms == 0 {
+			s = fmt.Sprintf("%ds", sec)
+		} else {
+			s = fmt.Sprintf("%ds%03dms", sec, ms)
+		}
+	case d < time.Hour:
+		s = fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		s = fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+	return fmt.Sprintf("%8s", s)
+}
+
 // ConfigGetter 定义动态获取配置的接口
 type ConfigGetter interface {
 	GetManager() *upstream.Manager
@@ -307,6 +331,7 @@ func (c *Controller) handleNonStreamRequest(ctx *gin.Context, providerModels []u
 }
 
 func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string, reqID string, upstreamPath string, operation string, processor proxyBodyProcessor) {
+	startTime := time.Now()
 	var lastErr error
 	var triedProviders []string
 
@@ -320,7 +345,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		// 检查客户端是否已断开连接，避免无意义的重试
 		if ctx.Request.Context().Err() != nil {
 			lastErr = ctx.Request.Context().Err()
-			log_helper.Warning(fmt.Sprintf("🔌 [%s] %s client disconnected, stopping retries", reqID, aliasModel))
+			log_helper.Warning(fmt.Sprintf("🔌 [%s][%s] %s client disconnected, stopping retries", reqID, formatDuration(time.Since(startTime)), aliasModel))
 			break
 		}
 
@@ -339,10 +364,10 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Warning(fmt.Sprintf("🔌 [%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("🔌 [%s][%s] %s #%d %s %s client disconnected", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, err))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -355,10 +380,10 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 			lastErr = err
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Warning(fmt.Sprintf("🔌 [%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("🔌 [%s][%s] %s #%d %s %s client disconnected", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, err))
+			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, err))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -366,7 +391,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		// 检查HTTP状态码 - 非200都视为失败
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
+			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: status %d", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, resp.StatusCode))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -378,8 +403,9 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		if i > 0 {
 			attemptInfo += "(retry)"
 		}
-		log_helper.Info(fmt.Sprintf("✅ [%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		ctx.Data(resp.StatusCode, "application/json", respBody)
+		// 响应已写入客户端后再输出日志，耗时为端到端总耗时
+		log_helper.Info(fmt.Sprintf("✅ [%s][%s] %s %s %s -> %s/%s", reqID, formatDuration(time.Since(startTime)), aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		return
 	}
 
@@ -389,7 +415,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 	}
 
 	// 所有供应商都失败
-	log_helper.Error(fmt.Sprintf("⛔ [%s] %s all providers failed: %v, tried: %v", reqID, aliasModel, lastErr, triedProviders))
+	log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s all providers failed: %v, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, lastErr, triedProviders))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
 }
 
@@ -399,6 +425,7 @@ func (c *Controller) handleStreamRequest(ctx *gin.Context, providerModels []upst
 }
 
 func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels []upstream.ProviderModel, body []byte, headers map[string]string, aliasModel string, reqID string, upstreamPath string, operation string, processor proxyBodyProcessor, validateChatContent bool) {
+	startTime := time.Now()
 	var lastErr error
 	var triedProviders []string
 
@@ -412,7 +439,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		// 检查客户端是否已断开连接，避免无意义的重试
 		if ctx.Request.Context().Err() != nil {
 			lastErr = ctx.Request.Context().Err()
-			log_helper.Warning(fmt.Sprintf("🔌 [%s] %s client disconnected, stopping retries", reqID, aliasModel))
+			log_helper.Warning(fmt.Sprintf("🔌 [%s][%s] %s client disconnected, stopping retries", reqID, formatDuration(time.Since(startTime)), aliasModel))
 			break
 		}
 
@@ -450,10 +477,10 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			}
 			// 客户端取消不算上游失败
 			if ctx.Request.Context().Err() != nil {
-				log_helper.Warning(fmt.Sprintf("🔌 [%s] %s #%d %s %s client disconnected", reqID, aliasModel, i+1, operation, providerName))
+				log_helper.Warning(fmt.Sprintf("🔌 [%s][%s] %s #%d %s %s client disconnected", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName))
 				break
 			}
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, lastErr))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -463,7 +490,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			releaseFirstByte()
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: status %d", reqID, aliasModel, i+1, operation, providerName, resp.StatusCode))
+			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: status %d", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, resp.StatusCode))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -520,7 +547,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			releaseFirstByte()
 			resp.Body.Close()
 			lastErr = fmt.Errorf("first-byte timeout (%ds)", pm.Provider.Config.Timeout)
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, lastErr))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -529,7 +556,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			releaseFirstByte()
 			resp.Body.Close()
 			lastErr = streamErr
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, lastErr))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -539,7 +566,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			releaseFirstByte()
 			resp.Body.Close()
 			lastErr = fmt.Errorf("empty stream: no content generated")
-			log_helper.Warning(fmt.Sprintf("❌ [%s] %s #%d %s %s failed: %v", reqID, aliasModel, i+1, operation, providerName, lastErr))
+			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, lastErr))
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -553,15 +580,16 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		if i > 0 {
 			attemptInfo += "(retry)"
 		}
-		log_helper.Info(fmt.Sprintf("✅ [%s] %s %s %s -> %s/%s", reqID, aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		c.streamResponseWithBufferedLines(ctx, resp, reader, bufferedLines, pm.Mapping.Upstream, aliasModel)
 		// 流转发已结束，释放首字节超时 ctx 资源（resp.Body 已由 streamResponseWithBufferedLines 内部关闭）
 		cancelFirstByte()
+		// 请求结束后再输出日志，并记录总耗时
+		log_helper.Info(fmt.Sprintf("✅ [%s][%s] %s %s %s -> %s/%s", reqID, formatDuration(time.Since(startTime)), aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		return
 	}
 
 	// 所有供应商都失败
-	log_helper.Error(fmt.Sprintf("⛔ [%s] %s %s all providers failed: %v, tried: %v", reqID, aliasModel, operation, lastErr, triedProviders))
+	log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s %s all providers failed: %v, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, operation, lastErr, triedProviders))
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
 }
 
