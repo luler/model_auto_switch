@@ -408,6 +408,56 @@
             color: #666;
         }
 
+        .logs-container {
+            position: relative;
+            background: #1e1e1e;
+            border-radius: 8px;
+            padding: 15px;
+            max-height: 600px;
+            overflow-y: auto;
+        }
+
+        .logs-content {
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 12px;
+            line-height: 1.5;
+            margin: 0;
+            white-space: pre;
+            overflow-x: auto;
+        }
+
+        .log-json {
+            border-radius: 3px;
+            cursor: copy;
+            transition: background-color 0.15s, outline-color 0.15s;
+        }
+
+        .log-json-request:hover {
+            background: rgba(52, 211, 153, 0.18);
+            outline: 1px solid rgba(52, 211, 153, 0.55);
+        }
+
+        .log-json-response:hover {
+            background: rgba(96, 165, 250, 0.18);
+            outline: 1px solid rgba(96, 165, 250, 0.55);
+        }
+
+        .log-copy-feedback {
+            position: fixed;
+            top: 24px;
+            left: 50%;
+            z-index: 1200;
+            transform: translateX(-50%);
+            padding: 9px 16px;
+            border-radius: 6px;
+            background: rgba(17, 24, 39, 0.94);
+            color: #fff;
+            font-size: 13px;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.24);
+            pointer-events: none;
+        }
+
         .loading::after {
             content: '';
             display: inline-block;
@@ -1109,9 +1159,15 @@
                 </div>
 
                 <div class="loading" v-if="logsLoading && !logsContent">加载中</div>
-                <div v-else class="logs-container"
-                     style="background: #1e1e1e; border-radius: 8px; padding: 15px; max-height: 600px; overflow-y: auto;">
-                    <pre style="color: #d4d4d4; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; line-height: 1.5; margin: 0; white-space: pre; overflow-x: auto;">{{ logsContent || '暂无日志' }}</pre>
+                <div v-else class="logs-container">
+                    <pre class="logs-content"><span v-for="segment in logSegments"
+                                                    :key="segment.id"
+                                                    :class="segment.type === 'json' ? ['log-json', 'log-json-' + segment.kind] : ''"
+                                                    :title="segment.type === 'json' ? '双击复制 JSON' : ''"
+                                                    @dblclick="copyLogSegment(segment, $event)">{{ segment.text }}</span><span v-if="!logSegments.length">暂无日志</span></pre>
+                </div>
+                <div v-if="logsCopyFeedback" class="log-copy-feedback" role="status" aria-live="polite">
+                    {{ logsCopyFeedback }}
                 </div>
             </div>
         </div>
@@ -1195,9 +1251,12 @@
                 // 日志
                 logsLoading: false,
                 logsContent: '',
+                logSegments: [],
                 logsAutoRefresh: false,
                 logsTimer: null,
                 logsDetailEnabled: false,
+                logsCopyFeedback: '',
+                logsCopyFeedbackTimer: null,
                 showBackToTop: false
             };
         },
@@ -1220,6 +1279,9 @@
             window.removeEventListener('scroll', this.handleScroll);
             if (this.logsTimer) {
                 clearInterval(this.logsTimer);
+            }
+            if (this.logsCopyFeedbackTimer) {
+                clearTimeout(this.logsCopyFeedbackTimer);
             }
         },
         methods: {
@@ -1512,7 +1574,123 @@
                     alert(e.response?.data?.message || e.message || '设置详情日志开关失败');
                 }
             },
+            parseLogSegments(content) {
+                if (!content) {
+                    return [];
+                }
+
+                const segments = [];
+                const markerPattern = /(?:^|\s)(request|response):[ \t]*(?=[{\[])/g;
+                let segmentID = 0;
+                let lineStart = 0;
+
+                const addSegment = (type, text, kind = '') => {
+                    if (!text) {
+                        return;
+                    }
+                    segments.push({id: segmentID++, type, text, kind});
+                };
+
+                while (lineStart < content.length) {
+                    const newlineIndex = content.indexOf('\n', lineStart);
+                    const lineEnd = newlineIndex === -1 ? content.length : newlineIndex;
+                    const line = content.slice(lineStart, lineEnd);
+                    const lineEnding = newlineIndex === -1 ? '' : '\n';
+                    let matched = false;
+                    let marker;
+
+                    markerPattern.lastIndex = 0;
+                    while ((marker = markerPattern.exec(line)) !== null) {
+                        const jsonStart = markerPattern.lastIndex;
+                        const candidate = line.slice(jsonStart);
+                        const rawJSON = candidate.trimEnd();
+
+                        try {
+                            const parsed = JSON.parse(rawJSON);
+                            if (parsed === null || typeof parsed !== 'object') {
+                                continue;
+                            }
+
+                            addSegment('text', line.slice(0, jsonStart));
+                            addSegment('json', rawJSON, marker[1]);
+                            addSegment('text', candidate.slice(rawJSON.length) + lineEnding);
+                            matched = true;
+                            break;
+                        } catch (e) {
+                            // 不是完整 JSON（例如被截断的详情日志），继续检查下一个标记
+                        }
+                    }
+
+                    if (!matched) {
+                        addSegment('text', line + lineEnding);
+                    }
+                    lineStart = newlineIndex === -1 ? content.length : newlineIndex + 1;
+                }
+
+                return segments;
+            },
+            copyLogSegment(segment, event) {
+                if (segment.type !== 'json') {
+                    return;
+                }
+                event.preventDefault();
+                event.stopPropagation();
+                this.copyLogJson(segment.text);
+            },
+            async copyLogJson(rawJSON) {
+                let copied = false;
+                if (navigator.clipboard && window.isSecureContext) {
+                    try {
+                        await navigator.clipboard.writeText(rawJSON);
+                        copied = true;
+                    } catch (e) {
+                        // 权限被拒绝时使用兼容方式复制
+                    }
+                }
+
+                if (!copied) {
+                    copied = this.copyTextFallback(rawJSON);
+                }
+                this.showLogsCopyFeedback(copied ? 'JSON 已复制' : '复制失败，请手动选择复制');
+            },
+            copyTextFallback(text) {
+                const textarea = document.createElement('textarea');
+                const activeElement = document.activeElement;
+                textarea.value = text;
+                textarea.setAttribute('readonly', '');
+                textarea.style.position = 'fixed';
+                textarea.style.left = '-9999px';
+                textarea.style.opacity = '0';
+                document.body.appendChild(textarea);
+                textarea.select();
+
+                let copied = false;
+                try {
+                    copied = document.execCommand('copy');
+                } catch (e) {
+                    copied = false;
+                } finally {
+                    document.body.removeChild(textarea);
+                    if (activeElement && typeof activeElement.focus === 'function') {
+                        activeElement.focus();
+                    }
+                }
+                return copied;
+            },
+            showLogsCopyFeedback(message) {
+                this.logsCopyFeedback = message;
+                if (this.logsCopyFeedbackTimer) {
+                    clearTimeout(this.logsCopyFeedbackTimer);
+                }
+                this.logsCopyFeedbackTimer = setTimeout(() => {
+                    this.logsCopyFeedback = '';
+                    this.logsCopyFeedbackTimer = null;
+                }, 1800);
+            },
             async fetchLogs() {
+                if (this.logsLoading) {
+                    return;
+                }
                 this.logsLoading = true;
                 try {
                     const res = await axios.get('/api/admin/logs', {
@@ -1521,7 +1699,11 @@
                     if (res.data.code !== 200) {
                         throw new Error(res.data.message || '获取失败');
                     }
-                    this.logsContent = res.data.data?.logs || '';
+                    const nextContent = res.data.data?.logs || '';
+                    if (nextContent !== this.logsContent) {
+                        this.logSegments = this.parseLogSegments(nextContent);
+                        this.logsContent = nextContent;
+                    }
                     // 自动滚动到底部
                     this.$nextTick(() => {
                         const container = document.querySelector('.logs-container');
@@ -1579,6 +1761,12 @@
                         throw new Error(res.data.message || '清空失败');
                     }
                     this.logsContent = '';
+                    this.logSegments = [];
+                    this.logsCopyFeedback = '';
+                    if (this.logsCopyFeedbackTimer) {
+                        clearTimeout(this.logsCopyFeedbackTimer);
+                        this.logsCopyFeedbackTimer = null;
+                    }
                 } catch (e) {
                     alert(e.response?.data?.message || e.message || '清空日志失败');
                 }
