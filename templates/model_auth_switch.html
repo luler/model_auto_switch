@@ -1098,6 +1098,10 @@
                         <button class="btn btn-secondary" style="margin-left: 10px;" @click="fetchLogs">
                             手动刷新
                         </button>
+                        <button class="btn" :class="logsDetailEnabled ? 'btn-warning' : 'btn-secondary'"
+                                style="margin-left: 10px;" @click="toggleLogsDetail">
+                            {{ logsDetailEnabled ? '详情日志:开' : '详情日志:关' }}
+                        </button>
                         <button class="btn btn-danger" style="margin-left: 10px;" @click="clearLogs">
                             清空日志
                         </button>
@@ -1193,6 +1197,7 @@
                 logsContent: '',
                 logsAutoRefresh: false,
                 logsTimer: null,
+                logsDetailEnabled: false,
                 showBackToTop: false
             };
         },
@@ -1476,6 +1481,35 @@
                 }
                 if (!this.logsAutoRefresh) {
                     this.startLogsAutoRefresh();
+                }
+                this.fetchLogsDetail();
+            },
+            async fetchLogsDetail() {
+                try {
+                    const res = await axios.get('/api/admin/logs/detail', {
+                        headers: {'X-API-Key': this.authCode}
+                    });
+                    if (res.data.code === 200) {
+                        this.logsDetailEnabled = !!res.data.data?.enabled;
+                    }
+                } catch (e) {
+                    // 静默失败：未登录或网络异常不影响日志查看
+                }
+            },
+            async toggleLogsDetail() {
+                const prev = this.logsDetailEnabled;
+                this.logsDetailEnabled = !prev;
+                try {
+                    const res = await axios.post('/api/admin/logs/detail', {enabled: this.logsDetailEnabled}, {
+                        headers: {'X-API-Key': this.authCode}
+                    });
+                    if (res.data.code !== 200) {
+                        throw new Error(res.data.message || '设置失败');
+                    }
+                    this.logsDetailEnabled = !!res.data.data?.enabled;
+                } catch (e) {
+                    this.logsDetailEnabled = prev;
+                    alert(e.response?.data?.message || e.message || '设置详情日志开关失败');
                 }
             },
             async fetchLogs() {

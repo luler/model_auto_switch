@@ -56,12 +56,19 @@ func formatDuration(d time.Duration) string {
 type ConfigGetter interface {
 	GetManager() *upstream.Manager
 	GetMaxRetries() int
+	IsDetailLogEnabled() bool
 }
 
 // Controller OpenAI 兼容接口控制器
 type Controller struct {
 	configGetter ConfigGetter // 动态获取配置
 }
+
+// detailLogMaxBytes 详情日志单条最大字节数。
+// 详情日志为可选开启的排障功能，需覆盖百万级 token 输入（≈4MB）与十万级 token 输出（≈400KB），
+// 故取 8MB 使常规 LLM 负载基本全量打印；仅对异常超大 body（如误标 JSON 的二进制）做兜底截断。
+// 设为 0 或负数则完全不截断（全量输出）。
+const detailLogMaxBytes = 8 * 1024 * 1024
 
 // NewController 创建控制器
 func NewController(configGetter ConfigGetter) *Controller {
@@ -78,6 +85,107 @@ func (c *Controller) getManager() *upstream.Manager {
 // getMaxRetries 获取当前的最大重试次数
 func (c *Controller) getMaxRetries() int {
 	return c.configGetter.GetMaxRetries()
+}
+
+// truncateLogJSON 截断过长的日志 JSON
+func truncateLogJSON(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + fmt.Sprintf("...(truncated, total=%d)", len(s))
+}
+
+// compactJSONForLog 将 body 压成单行 JSON 字符串；非 JSON（如 multipart）记元信息
+func compactJSONForLog(body []byte) string {
+	trimmed := bytes.TrimSpace(body)
+	if len(trimmed) == 0 {
+		return "{}"
+	}
+	if trimmed[0] == '{' || trimmed[0] == '[' {
+		var buf bytes.Buffer
+		if err := json.Compact(&buf, trimmed); err == nil {
+			return buf.String()
+		}
+		return string(trimmed)
+	}
+	// 非 JSON（multipart/binary）
+	meta, _ := json.Marshal(map[string]interface{}{
+		"_note": "non-json body",
+		"size":  len(body),
+	})
+	return string(meta)
+}
+
+// maybeLogBody 在详情日志开启时打印请求/响应 JSON。
+// prefix 为 "request" 或 "model #n operation -> provider/upstream response"，保持 reqID 本身不变。
+func (c *Controller) maybeLogBody(emoji, reqID string, startTime time.Time, prefix string, body []byte) {
+	if !c.configGetter.IsDetailLogEnabled() || len(body) == 0 {
+		return
+	}
+	log_helper.Info(fmt.Sprintf("%s [%s][%s] %s: %s", emoji, reqID, formatDuration(time.Since(startTime)), prefix, truncateLogJSON(compactJSONForLog(body), detailLogMaxBytes)))
+}
+
+func responseLogPrefix(aliasModel, attemptTag, operation string, pm upstream.ProviderModel) string {
+	return fmt.Sprintf("%s %s %s -> %s/%s response", aliasModel, attemptTag, operation, pm.Provider.Config.Name, pm.Mapping.Upstream)
+}
+
+func formatAttemptTag(index int) string {
+	tag := fmt.Sprintf("#%d", index+1)
+	if index > 0 {
+		tag += "(retry)"
+	}
+	return tag
+}
+
+func (c *Controller) maybeLogUpstreamError(reqID string, startTime time.Time, errMsg string, triedProviders []string) {
+	if !c.configGetter.IsDetailLogEnabled() {
+		return
+	}
+	body := []byte(fmt.Sprintf(`{"error":{"message":%q,"type":"upstream_error","tried":%q}}`, errMsg, strings.Join(triedProviders, ",")))
+	c.maybeLogBody("📤", reqID, startTime, "response", body)
+}
+
+func (c *Controller) readBodyForDetailLog(r io.Reader) []byte {
+	if !c.configGetter.IsDetailLogEnabled() {
+		return nil
+	}
+	body, _ := io.ReadAll(r)
+	return body
+}
+
+func streamLinePayload(line []byte) []byte {
+	data := bytes.TrimSpace(line)
+	if bytes.HasPrefix(data, []byte("data:")) {
+		data = bytes.TrimSpace(data[len("data:"):])
+	}
+	return data
+}
+
+func assembleStreamLinesJSON(lines [][]byte) []byte {
+	chunks := make([][]byte, 0, len(lines))
+	for _, line := range lines {
+		chunks = append(chunks, streamLinePayload(line))
+	}
+	return assembleStreamFinalJSON(chunks)
+}
+
+func replaceModelInStreamLines(lines [][]byte, upstreamModel, aliasModel string) [][]byte {
+	if upstreamModel == aliasModel {
+		return lines
+	}
+	replaced := make([][]byte, 0, len(lines))
+	for _, line := range lines {
+		replaced = append(replaced, replaceModelInStreamLine(line, upstreamModel, aliasModel))
+	}
+	return replaced
+}
+
+func (c *Controller) maybeLogStreamLines(reqID string, startTime time.Time, prefix string, lines [][]byte, upstreamModel, aliasModel string) {
+	if !c.configGetter.IsDetailLogEnabled() {
+		return
+	}
+	body := assembleStreamLinesJSON(replaceModelInStreamLines(lines, upstreamModel, aliasModel))
+	c.maybeLogBody("📤", reqID, startTime, prefix, body)
 }
 
 // ChatCompletions 处理 /v1/chat/completions 请求
@@ -335,6 +443,8 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 	var lastErr error
 	var triedProviders []string
 
+	c.maybeLogBody("📥", reqID, startTime, "request", body)
+
 	// 限制最大尝试次数
 	maxAttempts := c.getMaxRetries()
 	if maxAttempts > len(providerModels) {
@@ -352,6 +462,8 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		pm := providerModels[i]
 		providerName := fmt.Sprintf("%s(%s)", pm.Provider.Config.Name, pm.Mapping.Upstream)
 		triedProviders = append(triedProviders, providerName)
+		// 本次尝试的详情日志标识，沿用成功日志的 #2(retry) 风格
+		attemptTag := formatAttemptTag(i)
 
 		reqBody, reqHeaders := processor(body, headers, pm, aliasModel)
 
@@ -392,6 +504,7 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
 			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: status %d", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, resp.StatusCode))
+			c.maybeLogBody("📤", reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), respBody)
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -399,13 +512,10 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		// 成功响应 - 替换响应中的模型名为别名
 		respBody = replaceModelInResponse(respBody, pm.Mapping.Upstream, aliasModel)
 		c.getManager().RecordSuccess(pm.Provider, aliasModel, pm.Mapping.Upstream)
-		attemptInfo := fmt.Sprintf("#%d", i+1)
-		if i > 0 {
-			attemptInfo += "(retry)"
-		}
 		ctx.Data(resp.StatusCode, "application/json", respBody)
 		// 响应已写入客户端后再输出日志，耗时为端到端总耗时
-		log_helper.Info(fmt.Sprintf("✅ [%s][%s] %s %s %s -> %s/%s", reqID, formatDuration(time.Since(startTime)), aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		log_helper.Info(fmt.Sprintf("✅ [%s][%s] %s %s %s -> %s/%s", reqID, formatDuration(time.Since(startTime)), aliasModel, attemptTag, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		c.maybeLogBody("📤", reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), respBody)
 		return
 	}
 
@@ -415,8 +525,10 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 	}
 
 	// 所有供应商都失败
+	errMsg := fmt.Sprintf("all providers failed: %v", lastErr)
 	log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s all providers failed: %v, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, lastErr, triedProviders))
-	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
+	c.maybeLogUpstreamError(reqID, startTime, errMsg, triedProviders)
+	c.sendError(ctx, http.StatusBadGateway, "upstream_error", errMsg)
 }
 
 // handleStreamRequest 处理流式请求
@@ -428,6 +540,8 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 	startTime := time.Now()
 	var lastErr error
 	var triedProviders []string
+
+	c.maybeLogBody("📥", reqID, startTime, "request", body)
 
 	// 限制最大尝试次数
 	maxAttempts := c.getMaxRetries()
@@ -446,6 +560,8 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		pm := providerModels[i]
 		providerName := fmt.Sprintf("%s(%s)", pm.Provider.Config.Name, pm.Mapping.Upstream)
 		triedProviders = append(triedProviders, providerName)
+		// 本次尝试的详情日志标识，沿用成功日志的 #2(retry) 风格
+		attemptTag := formatAttemptTag(i)
 
 		reqBody, reqHeaders := processor(body, headers, pm, aliasModel)
 
@@ -488,9 +604,11 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		// 检查HTTP状态码 - 非200都视为失败
 		if resp.StatusCode != http.StatusOK {
 			releaseFirstByte()
+			errBody := c.readBodyForDetailLog(resp.Body)
 			resp.Body.Close()
 			lastErr = fmt.Errorf("upstream returned status %d", resp.StatusCode)
 			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: status %d", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, resp.StatusCode))
+			c.maybeLogBody("📤", reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), errBody)
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -548,6 +666,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			resp.Body.Close()
 			lastErr = fmt.Errorf("first-byte timeout (%ds)", pm.Provider.Config.Timeout)
 			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, lastErr))
+			c.maybeLogStreamLines(reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), bufferedLines, pm.Mapping.Upstream, aliasModel)
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -557,6 +676,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			resp.Body.Close()
 			lastErr = streamErr
 			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, lastErr))
+			c.maybeLogStreamLines(reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), bufferedLines, pm.Mapping.Upstream, aliasModel)
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -567,6 +687,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			resp.Body.Close()
 			lastErr = fmt.Errorf("empty stream: no content generated")
 			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, lastErr))
+			c.maybeLogStreamLines(reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), bufferedLines, pm.Mapping.Upstream, aliasModel)
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)
 			continue
 		}
@@ -576,21 +697,21 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			firstByteTimer.Stop()
 		}
 		c.getManager().RecordSuccess(pm.Provider, aliasModel, pm.Mapping.Upstream)
-		attemptInfo := fmt.Sprintf("#%d", i+1)
-		if i > 0 {
-			attemptInfo += "(retry)"
-		}
-		c.streamResponseWithBufferedLines(ctx, resp, reader, bufferedLines, pm.Mapping.Upstream, aliasModel)
+		detailEnabled := c.configGetter.IsDetailLogEnabled()
+		finalJSON := c.streamResponseWithBufferedLines(ctx, resp, reader, bufferedLines, pm.Mapping.Upstream, aliasModel, detailEnabled)
 		// 流转发已结束，释放首字节超时 ctx 资源（resp.Body 已由 streamResponseWithBufferedLines 内部关闭）
 		cancelFirstByte()
 		// 请求结束后再输出日志，并记录总耗时
-		log_helper.Info(fmt.Sprintf("✅ [%s][%s] %s %s %s -> %s/%s", reqID, formatDuration(time.Since(startTime)), aliasModel, attemptInfo, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		log_helper.Info(fmt.Sprintf("✅ [%s][%s] %s %s %s -> %s/%s", reqID, formatDuration(time.Since(startTime)), aliasModel, attemptTag, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
+		c.maybeLogBody("📤", reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), finalJSON)
 		return
 	}
 
 	// 所有供应商都失败
+	errMsg := fmt.Sprintf("all providers failed: %v", lastErr)
 	log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s %s all providers failed: %v, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, operation, lastErr, triedProviders))
-	c.sendError(ctx, http.StatusBadGateway, "upstream_error", fmt.Sprintf("all providers failed: %v", lastErr))
+	c.maybeLogUpstreamError(reqID, startTime, errMsg, triedProviders)
+	c.sendError(ctx, http.StatusBadGateway, "upstream_error", errMsg)
 }
 
 func validateImageEditMultipart(body []byte, contentType string) (string, error) {
@@ -851,11 +972,7 @@ func detectStreamError(line []byte) error {
 	}
 
 	// 移除 SSE 前缀 "data: "
-	data := line
-	if bytes.HasPrefix(line, []byte("data: ")) {
-		data = bytes.TrimPrefix(line, []byte("data: "))
-	}
-	data = bytes.TrimSpace(data)
+	data := streamLinePayload(line)
 
 	// 跳过空行和结束标记
 	if len(data) == 0 || bytes.Equal(data, []byte("[DONE]")) {
@@ -908,13 +1025,24 @@ func hasNonEmptyStreamContent(line []byte) bool {
 }
 
 // streamResponseWithBufferedLines 流式传输响应（包含已缓冲的行）
-func (c *Controller) streamResponseWithBufferedLines(ctx *gin.Context, resp *http.Response, reader *bufio.Reader, bufferedLines [][]byte, upstreamModel, aliasModel string) {
+// detailEnabled 为 true 时，在转发的同时收集 SSE chunk，结束后返回拼装出的最终 JSON 供详情日志打印。
+func (c *Controller) streamResponseWithBufferedLines(ctx *gin.Context, resp *http.Response, reader *bufio.Reader, bufferedLines [][]byte, upstreamModel, aliasModel string, detailEnabled bool) []byte {
 	defer resp.Body.Close()
+
+	// collect 仅在详情日志开启时提取 SSE data: 后的负载；空行/[DONE] 等非 JSON
+	// 由 assembleStreamFinalJSON 统一用 json.Valid 过滤，这里不做判断。
+	var collected [][]byte
+	collect := func(line []byte) {
+		if !detailEnabled {
+			return
+		}
+		collected = append(collected, streamLinePayload(line))
+	}
 
 	flusher, ok := ctx.Writer.(http.Flusher)
 	if !ok {
 		c.sendError(ctx, http.StatusInternalServerError, "server_error", "streaming not supported")
-		return
+		return assembleStreamFinalJSON(collected)
 	}
 
 	ctx.Header("Content-Type", "text/event-stream")
@@ -924,15 +1052,17 @@ func (c *Controller) streamResponseWithBufferedLines(ctx *gin.Context, resp *htt
 
 	// 先写入已缓冲的行
 	for _, line := range bufferedLines {
+		// 替换模型名
 		line = replaceModelInStreamLine(line, upstreamModel, aliasModel)
+		collect(line)
 		if _, writeErr := ctx.Writer.Write(line); writeErr != nil {
-			return
+			return assembleStreamFinalJSON(collected)
 		}
 		flusher.Flush()
 
 		// 检查是否是结束标记
 		if strings.TrimSpace(string(line)) == "data: [DONE]" {
-			return
+			return assembleStreamFinalJSON(collected)
 		}
 	}
 
@@ -945,6 +1075,7 @@ func (c *Controller) streamResponseWithBufferedLines(ctx *gin.Context, resp *htt
 
 		// 替换模型名
 		line = replaceModelInStreamLine(line, upstreamModel, aliasModel)
+		collect(line)
 
 		// 写入响应
 		if _, writeErr := ctx.Writer.Write(line); writeErr != nil {
@@ -957,6 +1088,31 @@ func (c *Controller) streamResponseWithBufferedLines(ctx *gin.Context, resp *htt
 			break
 		}
 	}
+
+	return assembleStreamFinalJSON(collected)
+}
+
+// assembleStreamFinalJSON 将收集到的 SSE chunk 原样拼成 JSON 数组 [json, json, ...]，
+// 供详情日志在请求结束时一次性打印所有片段。跳过空行/[DONE] 等非 JSON 行。
+func assembleStreamFinalJSON(chunks [][]byte) []byte {
+	if len(chunks) == 0 {
+		return nil
+	}
+	arr := make([]json.RawMessage, 0, len(chunks))
+	for _, raw := range chunks {
+		if len(raw) == 0 || !json.Valid(raw) {
+			continue
+		}
+		arr = append(arr, json.RawMessage(raw))
+	}
+	if len(arr) == 0 {
+		return []byte("[]")
+	}
+	wrapped, err := json.Marshal(arr)
+	if err != nil {
+		return nil
+	}
+	return wrapped
 }
 
 // sendError 发送 OpenAI 格式的错误响应

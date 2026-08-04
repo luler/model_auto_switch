@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -20,12 +21,13 @@ import (
 
 // AdminController 管理后台控制器
 type AdminController struct {
-	manager    *upstream.Manager
-	apiKeys    []string
-	adminKey   string
-	configPath string
-	maxRetries int
-	mu         sync.RWMutex
+	manager          *upstream.Manager
+	apiKeys          []string
+	adminKey         string
+	configPath       string
+	maxRetries       int
+	detailLogEnabled atomic.Bool // 运行时开关：是否打印接口请求/响应 JSON 详情（默认关）
+	mu               sync.RWMutex
 }
 
 // NewAdminController 创建管理控制器
@@ -99,6 +101,53 @@ func (c *AdminController) GetAdminKey() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.adminKey
+}
+
+// IsDetailLogEnabled 是否开启请求/响应 JSON 详情日志
+func (c *AdminController) IsDetailLogEnabled() bool {
+	return c.detailLogEnabled.Load()
+}
+
+// GetDetailLog 获取详情日志开关状态
+func (c *AdminController) GetDetailLog(ctx *gin.Context) {
+	apiKey := ctx.GetHeader("X-API-Key")
+	if !c.ValidateAPIKey(apiKey) {
+		response_helper.Common(ctx, 401, "未授权")
+		return
+	}
+	response_helper.Success(ctx, "获取成功", gin.H{
+		"enabled": c.IsDetailLogEnabled(),
+	})
+}
+
+// SetDetailLogRequest 设置详情日志开关请求
+type SetDetailLogRequest struct {
+	Enabled bool `json:"enabled"`
+}
+
+// SetDetailLog 设置详情日志开关
+func (c *AdminController) SetDetailLog(ctx *gin.Context) {
+	apiKey := ctx.GetHeader("X-API-Key")
+	if !c.ValidateAPIKey(apiKey) {
+		response_helper.Common(ctx, 401, "未授权")
+		return
+	}
+
+	var req SetDetailLogRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		response_helper.Fail(ctx, "参数错误")
+		return
+	}
+
+	c.detailLogEnabled.Store(req.Enabled)
+	if req.Enabled {
+		log_helper.Info("📝 详情日志已开启（将打印接口请求/响应 JSON）")
+	} else {
+		log_helper.Info("📝 详情日志已关闭")
+	}
+	response_helper.Success(ctx, "设置成功", gin.H{
+		"enabled": c.IsDetailLogEnabled(),
+	})
 }
 
 // LoginRequest 登录请求
