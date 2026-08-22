@@ -69,15 +69,17 @@ type ModelStats struct {
 
 // ModelStatsSnapshot 模型统计快照（含健康状态，统一落盘）
 type ModelStatsSnapshot struct {
-	ProviderName   string `json:"provider_name"`
-	ModelAlias     string `json:"model_alias"`
-	UpstreamModel  string `json:"upstream_model"`
-	TodaySuccess   int64  `json:"today_success"`
-	TodayFailure   int64  `json:"today_failure"`
-	TotalSuccess   int64  `json:"total_success"`
-	TotalFailure   int64  `json:"total_failure"`
-	Healthy        bool   `json:"healthy"`         // 健康状态
-	UnhealthySince int64  `json:"unhealthy_since"` // 开始异常的时间戳(秒)，健康时为0
+	ProviderName     string `json:"provider_name"`
+	ModelAlias       string `json:"model_alias"`
+	UpstreamModel    string `json:"upstream_model"`
+	TodaySuccess     int64  `json:"today_success"`
+	TodayFailure     int64  `json:"today_failure"`
+	TotalSuccess     int64  `json:"total_success"`
+	TotalFailure     int64  `json:"total_failure"`
+	Healthy          bool   `json:"healthy"`           // 健康状态
+	UnhealthySince   int64  `json:"unhealthy_since"`   // 开始异常的时间戳(秒)，健康时为0
+	RecoveryAttempts int32  `json:"recovery_attempts"` // 连续恢复探测失败次数（用于退避计算），重载后保持退避节奏
+	LastCheckTime    int64  `json:"last_check_time"`   // 上次健康检查时间戳(纳秒)，重载后避免立即重复检查
 }
 
 // StatsSnapshotFile 模型统计持久化文件（统计 + 健康状态合并落盘）
@@ -589,20 +591,25 @@ func (m *Manager) buildStatsSnapshot() StatsSnapshotFile {
 			}
 			// 健康状态按 upstream 维度取（同一 upstream 多 alias 共享）
 			healthy, unhealthySince := true, int64(0)
+			recoveryAttempts, lastCheckTime := int32(0), int64(0)
 			if health, exists := p.modelHealths[mm.Upstream]; exists {
 				healthy = health.Healthy.Load()
 				unhealthySince = health.UnhealthySince.Load()
+				recoveryAttempts = health.RecoveryAttempts.Load()
+				lastCheckTime = health.LastCheckTime.Load()
 			}
 			snapshot.Models = append(snapshot.Models, ModelStatsSnapshot{
-				ProviderName:   p.Config.Name,
-				ModelAlias:     mm.Alias,
-				UpstreamModel:  mm.Upstream,
-				TodaySuccess:   stats.TodaySuccess.Load(),
-				TodayFailure:   stats.TodayFailure.Load(),
-				TotalSuccess:   stats.TotalSuccess.Load(),
-				TotalFailure:   stats.TotalFailure.Load(),
-				Healthy:        healthy,
-				UnhealthySince: unhealthySince,
+				ProviderName:     p.Config.Name,
+				ModelAlias:       mm.Alias,
+				UpstreamModel:    mm.Upstream,
+				TodaySuccess:     stats.TodaySuccess.Load(),
+				TodayFailure:     stats.TodayFailure.Load(),
+				TotalSuccess:     stats.TotalSuccess.Load(),
+				TotalFailure:     stats.TotalFailure.Load(),
+				Healthy:          healthy,
+				UnhealthySince:   unhealthySince,
+				RecoveryAttempts: recoveryAttempts,
+				LastCheckTime:    lastCheckTime,
 			})
 		}
 		p.mu.RUnlock()
@@ -663,6 +670,8 @@ func (m *Manager) ImportStatsSnapshot(snapshot StatsSnapshotFile) {
 			if exists {
 				health.Healthy.Store(item.Healthy)
 				health.UnhealthySince.Store(item.UnhealthySince)
+				health.RecoveryAttempts.Store(item.RecoveryAttempts)
+				health.LastCheckTime.Store(item.LastCheckTime)
 			}
 			restoredHealth[item.ProviderName+"|"+item.UpstreamModel] = true
 		}
