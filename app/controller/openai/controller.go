@@ -214,9 +214,13 @@ func (c *Controller) ChatCompletions(ctx *gin.Context) {
 		return
 	}
 
+	// 生成请求ID用于日志追踪
+	reqID := generateRequestID()
+
 	// 使用负载均衡选择首选 ProviderModel，然后获取完整列表用于故障转移
 	providerModels := c.getLoadBalancedProviderModels(req.Model)
 	if len(providerModels) == 0 {
+		log_helper.Error(fmt.Sprintf("⛔ [%s][     0ms] %s no provider available for model: %s", reqID, req.Model, req.Model))
 		c.sendError(ctx, http.StatusServiceUnavailable, "service_unavailable", "no provider available for model: "+req.Model)
 		return
 	}
@@ -225,9 +229,6 @@ func (c *Controller) ChatCompletions(ctx *gin.Context) {
 
 	// 保存原始模型名（别名）
 	aliasModel := req.Model
-
-	// 生成请求ID用于日志追踪
-	reqID := generateRequestID()
 
 	if req.Stream {
 		c.handleStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel, reqID)
@@ -258,18 +259,20 @@ func (c *Controller) ImagesGenerations(ctx *gin.Context) {
 		return
 	}
 
+	reqID := generateRequestID()
 	providerModels := c.getLoadBalancedProviderModels(req.Model)
 	if len(providerModels) == 0 {
+		log_helper.Error(fmt.Sprintf("⛔ [%s][     0ms] %s image generations no provider available for model: %s", reqID, req.Model, req.Model))
 		c.sendError(ctx, http.StatusServiceUnavailable, "service_unavailable", "no provider available for model: "+req.Model)
 		return
 	}
 
 	if req.Stream {
-		c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, copyRequestHeaders(ctx), req.Model, generateRequestID(), "/v1/images/generations", "image generations", processJSONProxyBody, false)
+		c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, copyRequestHeaders(ctx), req.Model, reqID, "/v1/images/generations", "image generations", processJSONProxyBody, false)
 		return
 	}
 
-	c.handleProxyRequest(ctx, providerModels, bodyBytes, copyRequestHeaders(ctx), req.Model, generateRequestID(), "/v1/images/generations", "image generations", processJSONProxyBody)
+	c.handleProxyRequest(ctx, providerModels, bodyBytes, copyRequestHeaders(ctx), req.Model, reqID, "/v1/images/generations", "image generations", processJSONProxyBody)
 }
 
 // ImagesEdits 处理 /v1/images/edits 请求
@@ -299,18 +302,20 @@ func (c *Controller) ImagesEdits(ctx *gin.Context) {
 			return
 		}
 
+		reqID := generateRequestID()
 		providerModels := c.getLoadBalancedProviderModels(req.Model)
 		if len(providerModels) == 0 {
+			log_helper.Error(fmt.Sprintf("⛔ [%s][     0ms] %s image edits no provider available for model: %s", reqID, req.Model, req.Model))
 			c.sendError(ctx, http.StatusServiceUnavailable, "service_unavailable", "no provider available for model: "+req.Model)
 			return
 		}
 
 		if req.Stream {
-			c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, headers, req.Model, generateRequestID(), "/v1/images/edits", "image edits", processJSONProxyBody, false)
+			c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, headers, req.Model, reqID, "/v1/images/edits", "image edits", processJSONProxyBody, false)
 			return
 		}
 
-		c.handleProxyRequest(ctx, providerModels, bodyBytes, headers, req.Model, generateRequestID(), "/v1/images/edits", "image edits", processJSONProxyBody)
+		c.handleProxyRequest(ctx, providerModels, bodyBytes, headers, req.Model, reqID, "/v1/images/edits", "image edits", processJSONProxyBody)
 		return
 	}
 
@@ -321,8 +326,10 @@ func (c *Controller) ImagesEdits(ctx *gin.Context) {
 			return
 		}
 
+		reqID := generateRequestID()
 		providerModels := c.getLoadBalancedProviderModels(aliasModel)
 		if len(providerModels) == 0 {
+			log_helper.Error(fmt.Sprintf("⛔ [%s][     0ms] %s image edits no provider available for model: %s", reqID, aliasModel, aliasModel))
 			c.sendError(ctx, http.StatusServiceUnavailable, "service_unavailable", "no provider available for model: "+aliasModel)
 			return
 		}
@@ -331,10 +338,10 @@ func (c *Controller) ImagesEdits(ctx *gin.Context) {
 			return processMultipartProxyBody(body, headers, pm, aliasModel, contentType)
 		}
 		if multipartHasStream(bodyBytes, contentType) {
-			c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel, generateRequestID(), "/v1/images/edits", "image edits", processor, false)
+			c.handleProxyStreamRequest(ctx, providerModels, bodyBytes, headers, aliasModel, reqID, "/v1/images/edits", "image edits", processor, false)
 			return
 		}
-		c.handleProxyRequest(ctx, providerModels, bodyBytes, headers, aliasModel, generateRequestID(), "/v1/images/edits", "image edits", processor)
+		c.handleProxyRequest(ctx, providerModels, bodyBytes, headers, aliasModel, reqID, "/v1/images/edits", "image edits", processor)
 		return
 	}
 
@@ -519,14 +526,15 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 		return
 	}
 
-	// 客户端已断开，无需返回错误
+	// 客户端已断开，输出唯一终态 ⛔ 并退出
 	if ctx.Request.Context().Err() != nil {
+		log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s %s client disconnected, aborted, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, operation, triedProviders))
 		return
 	}
 
-	// 所有供应商都失败
+	// 所有供应商都失败，输出唯一终态 ⛔
 	errMsg := fmt.Sprintf("all providers failed: %v", lastErr)
-	log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s all providers failed: %v, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, lastErr, triedProviders))
+	log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s %s all providers failed: %v, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, operation, lastErr, triedProviders))
 	c.maybeLogUpstreamError(reqID, startTime, errMsg, triedProviders)
 	c.sendError(ctx, http.StatusBadGateway, "upstream_error", errMsg)
 }
@@ -701,13 +709,27 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		finalJSON := c.streamResponseWithBufferedLines(ctx, resp, reader, bufferedLines, pm.Mapping.Upstream, aliasModel, detailEnabled)
 		// 流转发已结束，释放首字节超时 ctx 资源（resp.Body 已由 streamResponseWithBufferedLines 内部关闭）
 		cancelFirstByte()
-		// 请求结束后再输出日志，并记录总耗时
+
+		// 若传输中途客户端挂断：输出唯一终态 ⛔（不再误报 ✅）
+		if ctx.Request.Context().Err() != nil {
+			log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s %s %s stream disconnected by client -> %s/%s", reqID, formatDuration(time.Since(startTime)), aliasModel, attemptTag, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
+			c.maybeLogBody("📤", reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), finalJSON)
+			return
+		}
+
+		// 真正成功完成流式传输：输出唯一终态 ✅，并记录总耗时
 		log_helper.Info(fmt.Sprintf("✅ [%s][%s] %s %s %s -> %s/%s", reqID, formatDuration(time.Since(startTime)), aliasModel, attemptTag, operation, pm.Provider.Config.Name, pm.Mapping.Upstream))
 		c.maybeLogBody("📤", reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), finalJSON)
 		return
 	}
 
-	// 所有供应商都失败
+	// 首包前客户端已断开：输出唯一终态 ⛔ 并退出
+	if ctx.Request.Context().Err() != nil {
+		log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s %s client disconnected, aborted, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, operation, triedProviders))
+		return
+	}
+
+	// 所有供应商都失败，输出唯一终态 ⛔
 	errMsg := fmt.Sprintf("all providers failed: %v", lastErr)
 	log_helper.Error(fmt.Sprintf("⛔ [%s][%s] %s %s all providers failed: %v, tried: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, operation, lastErr, triedProviders))
 	c.maybeLogUpstreamError(reqID, startTime, errMsg, triedProviders)
