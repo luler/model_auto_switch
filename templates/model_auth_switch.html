@@ -174,6 +174,11 @@
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s;
+            white-space: nowrap;
+        }
+
+        .btn * {
+            white-space: nowrap;
         }
 
         .btn-primary {
@@ -228,6 +233,14 @@
         .btn-sm {
             padding: 6px 12px;
             font-size: 12px;
+        }
+
+        .btn-xs {
+            padding: 4px 10px;
+            font-size: 12px;
+            border-radius: 6px;
+            line-height: 1.4;
+            font-weight: 500;
         }
 
         .stats {
@@ -361,6 +374,7 @@
             border-radius: 20px;
             font-size: 12px;
             font-weight: 600;
+            white-space: nowrap;
         }
 
         .status-healthy {
@@ -400,6 +414,19 @@
         @keyframes pulse {
             0%, 100% { opacity: 0.7; }
             50% { opacity: 0.4; }
+        }
+
+        .priority-weight-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            background: #f1f5f9;
+            color: #334155;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+            white-space: nowrap;
         }
 
         .loading {
@@ -534,6 +561,55 @@
             flex: 1;
         }
 
+        .global-config-card {
+            background: #f8f9fa;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            border: 2px solid #e0e0e0;
+        }
+
+        .global-config-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+        }
+
+        .global-config-item {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .global-config-item label {
+            display: block;
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 6px;
+            font-weight: 500;
+        }
+
+        .global-config-item input {
+            width: 100%;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            font-size: 14px;
+            background: #fff;
+            box-sizing: border-box;
+            transition: border-color 0.2s;
+        }
+
+        .global-config-item input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .global-config-tip {
+            font-size: 11px;
+            color: #999;
+            margin-top: 4px;
+        }
+
         .provider-card {
             background: #f8f9fa;
             border-radius: 12px;
@@ -564,54 +640,142 @@
         }
 
         .model-list {
-            margin-top: 15px;
+            margin-top: 20px;
+        }
+
+        .model-list-header-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+
+        .model-list-title {
+            font-weight: 600;
+            color: #333;
+            font-size: 15px;
+        }
+
+        .model-list-count {
+            font-size: 12px;
+            color: #4f46e5;
+            background: #eef2ff;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-weight: 600;
+        }
+
+        .model-table-header {
+            display: grid;
+            grid-template-columns: 2fr 2fr 80px 80px 95px 140px;
+            gap: 12px;
+            padding: 0 12px 6px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #64748b;
+        }
+
+        .model-table-header .col-priority,
+        .model-table-header .col-weight,
+        .model-table-header .col-timeout {
+            text-align: center;
+        }
+
+        .model-table-header .col-actions {
+            text-align: center;
+        }
+
+        .model-empty-hint {
+            padding: 20px;
+            text-align: center;
+            color: #94a3b8;
+            font-size: 13px;
+            background: white;
+            border-radius: 8px;
+            border: 1px dashed #cbd5e1;
+            margin-bottom: 12px;
         }
 
         .model-item {
-            display: flex;
+            display: grid;
+            grid-template-columns: 2fr 2fr 80px 80px 95px 140px;
+            gap: 12px;
             align-items: center;
-            gap: 15px;
-            padding: 10px;
+            padding: 10px 12px;
             background: white;
             border-radius: 8px;
-            margin-bottom: 10px;
+            margin-bottom: 8px;
+            border: 1px solid #e2e8f0;
+            transition: all 0.2s;
         }
 
-        .model-item input {
-            padding: 8px;
-            border: 1px solid #ddd;
+        .model-item:hover {
+            border-color: #cbd5e1;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+        }
+
+        .model-card-header {
+            display: none;
+        }
+
+        .mobile-label {
+            display: none;
+        }
+
+        .model-field {
+            min-width: 0;
+        }
+
+        .model-field input {
+            width: 100%;
+            min-width: 0;
+            box-sizing: border-box;
+            padding: 8px 12px;
+            border: 1px solid #cbd5e1;
             border-radius: 6px;
             font-size: 13px;
+            background: #ffffff;
+            transition: border-color 0.2s, box-shadow 0.2s;
         }
 
-        .model-item .upstream {
-            flex: 2;
+        .model-field input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
         }
 
-        .model-item .alias {
-            flex: 2;
+        .model-field.col-priority input,
+        .model-field.col-weight input,
+        .model-field.col-timeout input {
+            text-align: center;
         }
 
-        .model-item .priority, .model-item .weight {
-            width: 80px;
+        .model-desktop-actions {
+            display: flex;
+            gap: 8px;
+            justify-content: center;
         }
 
         .add-btn {
             display: inline-flex;
             align-items: center;
-            gap: 5px;
-            padding: 8px 16px;
-            background: #e8f4fd;
-            color: #667eea;
-            border: 2px dashed #667eea;
+            justify-content: center;
+            gap: 6px;
+            padding: 9px 18px;
+            background: #eef2ff;
+            color: #4f46e5;
+            border: 2px dashed #818cf8;
             border-radius: 8px;
             cursor: pointer;
             font-size: 14px;
+            font-weight: 500;
             transition: all 0.2s;
+            margin-top: 4px;
         }
 
         .add-btn:hover {
-            background: #d0e8fc;
+            background: #e0e7ff;
+            border-color: #6366f1;
         }
 
         .toolbar {
@@ -621,10 +785,17 @@
             margin-bottom: 20px;
         }
 
+        .logs-toolbar-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
         .refresh-btn {
             display: inline-flex;
             align-items: center;
             gap: 8px;
+            white-space: nowrap;
         }
 
         .floating-actions {
@@ -651,6 +822,7 @@
             align-items: center;
             justify-content: center;
             text-align: center;
+            white-space: nowrap;
         }
 
         .floating-actions .btn-secondary {
@@ -736,17 +908,18 @@
             border-top: 1px solid #eee;
         }
 
-        @media (max-width: 768px) {
+        @media (max-width: 860px) {
             body {
-                padding: 10px;
+                padding: 10px 8px;
             }
 
-            .back-to-top {
-                right: 14px;
-                bottom: 14px;
-                width: 42px;
-                height: 42px;
-                font-size: 20px;
+            .main-content {
+                padding: 14px 10px;
+                border-radius: 12px;
+            }
+
+            .header {
+                margin-bottom: 20px;
             }
 
             .header h1 {
@@ -759,23 +932,29 @@
                 padding-right: 60px;
             }
 
+            .btn-logout {
+                padding: 6px 12px;
+                font-size: 12px;
+            }
+
             .auth-card {
                 margin: 30px auto;
                 padding: 24px 16px;
             }
 
-            .main-content {
-                padding: 16px 12px;
-            }
-
             .tabs {
-                flex-wrap: wrap;
+                display: flex;
                 gap: 6px;
+                margin-bottom: 16px;
+                padding-bottom: 10px;
             }
 
             .tab-btn {
-                padding: 8px 14px;
+                flex: 1 1 0;
+                padding: 10px 4px;
                 font-size: 13px;
+                text-align: center;
+                white-space: nowrap;
             }
 
             .toolbar {
@@ -785,6 +964,31 @@
 
             .toolbar h3 {
                 width: 100%;
+                font-size: 16px;
+            }
+
+            .logs-toolbar-actions {
+                display: flex;
+                align-items: center;
+                gap: 5px;
+                width: 100%;
+                overflow-x: auto;
+                -webkit-overflow-scrolling: touch;
+                scrollbar-width: none;
+            }
+
+            .logs-toolbar-actions::-webkit-scrollbar {
+                display: none;
+            }
+
+            .logs-toolbar-actions .btn {
+                flex: 1 1 0;
+                min-width: 0;
+                padding: 7px 4px;
+                font-size: 12px;
+                white-space: nowrap;
+                text-align: center;
+                border-radius: 6px;
             }
 
             .stats {
@@ -823,26 +1027,236 @@
                 font-size: 12px;
             }
 
+            /* 供应商全局配置卡片移动端优化 */
+            .global-config-card {
+                padding: 14px 10px;
+                margin-bottom: 16px;
+                border-radius: 10px;
+            }
+
+            .global-config-grid {
+                grid-template-columns: 1fr;
+                gap: 12px;
+            }
+
+            .provider-card {
+                padding: 14px 10px;
+                margin-bottom: 16px;
+                border-radius: 10px;
+            }
+
+            .provider-header h3 {
+                font-size: 16px;
+            }
+
             .form-row {
                 flex-direction: column;
+                gap: 0;
+            }
+
+            .form-group {
+                margin-bottom: 12px;
+            }
+
+            .form-group label {
+                font-size: 13px;
+                margin-bottom: 6px;
+            }
+
+            .form-group input, .form-group select, .form-group textarea {
+                font-size: 15px;
+                padding: 10px 12px;
+                border-radius: 8px;
+            }
+
+            /* 模型映射移动端卡片布局：全宽输入框 + 双列数值 + 顶部操作条 */
+            .model-table-header {
+                display: none;
+            }
+
+            .model-desktop-actions {
+                display: none;
             }
 
             .model-item {
-                flex-wrap: wrap;
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                grid-template-areas:
+                    "card-header card-header"
+                    "col-upstream col-upstream"
+                    "col-alias col-alias"
+                    "col-priority col-weight"
+                    "col-timeout col-timeout";
+                gap: 10px;
+                padding: 12px;
+                background: #ffffff;
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+                margin-bottom: 12px;
+                box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
             }
 
-            .model-item input {
+            .model-card-header {
+                grid-area: card-header;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                padding-bottom: 8px;
+                border-bottom: 1px solid #f1f5f9;
+                margin-bottom: 2px;
+            }
+
+            .model-card-badge-wrap {
+                display: flex;
+                align-items: center;
+                gap: 8px;
                 min-width: 0;
+                flex: 1;
+            }
+
+            .model-badge {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                background: #eef2ff;
+                color: #4f46e5;
+                font-size: 11px;
+                font-weight: 700;
+                padding: 2px 7px;
+                border-radius: 6px;
+                flex-shrink: 0;
+            }
+
+            .model-card-name {
+                font-size: 13px;
+                font-weight: 600;
+                color: #334155;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                white-space: nowrap;
+                max-width: 140px;
+            }
+
+            .model-card-actions {
+                display: flex;
+                gap: 6px;
+                flex-shrink: 0;
+            }
+
+            .col-upstream {
+                grid-area: col-upstream;
+            }
+
+            .col-alias {
+                grid-area: col-alias;
+            }
+
+            .col-priority {
+                grid-area: col-priority;
+            }
+
+            .col-weight {
+                grid-area: col-weight;
+            }
+
+            .col-timeout {
+                grid-area: col-timeout;
+            }
+
+            .mobile-label {
+                display: block;
+                font-size: 12px;
+                font-weight: 600;
+                color: #475569;
+                margin-bottom: 5px;
+            }
+
+            .mobile-label .label-tip {
+                font-size: 11px;
+                font-weight: normal;
+                color: #94a3b8;
+            }
+
+            .model-field input {
                 width: 100%;
+                min-width: 0;
+                box-sizing: border-box;
+                padding: 10px 12px;
+                border: 1px solid #cbd5e1;
+                border-radius: 8px;
+                font-size: 15px;
+                background: #f8fafc;
+            }
+
+            .model-field input:focus {
+                background: #ffffff;
+                border-color: #667eea;
+                box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
+            }
+
+            .model-field.col-priority input,
+            .model-field.col-weight input {
+                text-align: left;
+            }
+
+            .add-btn {
+                display: flex;
+                width: 100%;
+                justify-content: center;
+                padding: 12px;
+                font-size: 14px;
+                font-weight: 600;
+                border-radius: 10px;
+                margin-top: 6px;
+            }
+
+            /* 移动端底部浮动操作条 */
+            .floating-actions {
+                bottom: 12px;
+                padding: 6px 10px;
+                gap: 6px;
+                width: auto;
+                max-width: calc(100% - 20px);
+                box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+            }
+
+            .floating-actions .btn {
+                min-width: auto;
+                padding: 8px 12px;
+                font-size: 13px;
+                white-space: nowrap;
+                flex-shrink: 0;
+            }
+
+            .providers-tab,
+            .health-tab {
+                padding-bottom: 100px;
+            }
+
+            .back-to-top {
+                right: 12px;
+                bottom: 74px;
+                width: 40px;
+                height: 40px;
+                font-size: 18px;
             }
 
             .btn {
                 padding: 8px 14px;
                 font-size: 13px;
+                white-space: nowrap;
             }
 
             .refresh-btn {
-                padding: 8px 14px;
+                padding: 8px 12px;
+                white-space: nowrap;
+            }
+
+            .modal-content {
+                padding: 20px 16px;
+                width: 95%;
+                max-height: 85vh;
+                border-radius: 12px;
             }
         }
     </style>
@@ -909,6 +1323,7 @@
                             <th>供应商</th>
                             <th>模型别名</th>
                             <th>上游模型</th>
+                            <th style="text-align: center;">权重</th>
                             <th class="sort-header" :class="{active: healthSort.field === 'status'}" @click="toggleHealthSort('status')" style="cursor: pointer; user-select: none; text-align: center;">状态<span class="sort-icon" :class="{active: healthSort.field === 'status'}">{{ sortArrow('status') }}</span></th>
                             <th class="sort-header" :class="{active: healthSort.field === 'today_success_requests'}" @click="toggleHealthSort('today_success_requests')" style="cursor: pointer; user-select: none;">成功次数<span class="sort-icon" :class="{active: healthSort.field === 'today_success_requests'}">{{ sortArrow('today_success_requests') }}</span></th>
                             <th class="sort-header" :class="{active: healthSort.field === 'today_failure_count'}" @click="toggleHealthSort('today_failure_count')" style="cursor: pointer; user-select: none;">失败次数<span class="sort-icon" :class="{active: healthSort.field === 'today_failure_count'}">{{ sortArrow('today_failure_count') }}</span></th>
@@ -922,6 +1337,11 @@
                             <td>{{ model.provider_name }}</td>
                             <td>{{ model.model_alias }}</td>
                             <td>{{ model.upstream_model }}</td>
+                            <td style="text-align: center;">
+                                <span class="priority-weight-badge" :title="'优先级: ' + (model.priority ?? 0) + ' / 权重: ' + (model.weight ?? 1)">
+                                    {{ model.priority ?? 0 }}/{{ model.weight ?? 1 }}
+                                </span>
+                            </td>
                             <td style="text-align:center;">
                                 <div style="display:inline-flex;flex-direction:column;align-items:center;">
                                         <span class="status-badge"
@@ -1011,41 +1431,34 @@
                 <p class="error-msg" v-if="saveError">{{ saveError }}</p>
 
                 <!-- 全局配置参数 -->
-                <div class="global-config-card"
-                     style="background: #f8f9fa; border-radius: 12px; padding: 20px; margin-bottom: 20px; border: 2px solid #e0e0e0;">
+                <div class="global-config-card">
                     <h4 style="margin-bottom: 15px; color: #333;">全局配置参数</h4>
-                    <div style="display: flex; flex-wrap: wrap; gap: 20px;">
-                        <div style="flex: 1; min-width: 200px;">
-                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">单次请求最大尝试次数</label>
-                            <input type="number" v-model.number="globalConfig.max_retries" min="1"
-                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
+                    <div class="global-config-grid">
+                        <div class="global-config-item">
+                            <label>单次请求最大尝试次数</label>
+                            <input type="number" v-model.number="globalConfig.max_retries" min="1">
                         </div>
-                        <div style="flex: 1; min-width: 200px;">
-                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">连续失败标记不健康次数</label>
-                            <input type="number" v-model.number="globalConfig.max_failures" min="1"
-                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
+                        <div class="global-config-item">
+                            <label>连续失败标记不健康次数</label>
+                            <input type="number" v-model.number="globalConfig.max_failures" min="1">
                         </div>
-                        <div style="flex: 1; min-width: 200px;">
-                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">恢复检查间隔（秒）</label>
-                            <input type="number" v-model.number="globalConfig.recovery_interval" min="1"
-                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
+                        <div class="global-config-item">
+                            <label>恢复检查间隔（秒）</label>
+                            <input type="number" v-model.number="globalConfig.recovery_interval" min="1">
                         </div>
-                        <div style="flex: 1; min-width: 200px;">
-                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">恢复检查退避倍数</label>
-                            <input type="number" v-model.number="globalConfig.recovery_backoff_factor" min="1" step="0.1"
-                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
-                            <span style="font-size: 11px; color: #999;">设为1禁用退避，默认2.0（每次失败间隔翻倍）</span>
+                        <div class="global-config-item">
+                            <label>恢复检查退避倍数</label>
+                            <input type="number" v-model.number="globalConfig.recovery_backoff_factor" min="1" step="0.1">
+                            <span class="global-config-tip">设为1禁用退避，默认2.0（每次失败间隔翻倍）</span>
                         </div>
-                        <div style="flex: 1; min-width: 200px;">
-                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">恢复检查最大间隔（秒）</label>
-                            <input type="number" v-model.number="globalConfig.recovery_max_interval" min="1"
-                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
-                            <span style="font-size: 11px; color: #999;">退避上限，默认3600（1小时）</span>
+                        <div class="global-config-item">
+                            <label>恢复检查最大间隔（秒）</label>
+                            <input type="number" v-model.number="globalConfig.recovery_max_interval" min="1">
+                            <span class="global-config-tip">退避上限，默认3600（1小时）</span>
                         </div>
-                        <div style="flex: 1; min-width: 200px;">
-                            <label style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">健康检查周期（秒）</label>
-                            <input type="number" v-model.number="globalConfig.health_check_period" min="1"
-                                   style="width: 100%; padding: 10px 12px; border-radius: 8px; border: 1px solid #ddd; font-size: 14px;">
+                        <div class="global-config-item">
+                            <label>健康检查周期（秒）</label>
+                            <input type="number" v-model.number="globalConfig.health_check_period" min="1">
                         </div>
                     </div>
                 </div>
@@ -1076,7 +1489,7 @@
                                 <label>API Key</label>
                                 <div style="display: flex; gap: 8px;">
                                     <input :type="provider.showApiKey ? 'text' : 'password'" v-model="provider.api_key"
-                                           placeholder="sk-xxx" style="flex: 1;">
+                                           placeholder="sk-xxx" style="flex: 1; min-width: 0;">
                                     <button type="button" class="btn btn-secondary btn-sm"
                                             @click="provider.showApiKey = !provider.showApiKey"
                                             style="white-space: nowrap;">
@@ -1107,17 +1520,77 @@
                         </div>
 
                         <div class="model-list">
-                            <label style="font-weight: 600; color: #333; margin-bottom: 10px; display: block;">模型映射</label>
-                            <div class="model-item" v-for="(model, mIdx) in provider.model_mappings" :key="mIdx">
-                                <input type="text" class="upstream" v-model="model.upstream" placeholder="上游模型名">
-                                <input type="text" class="alias" v-model="model.alias" placeholder="别名(可选)">
-                                <input type="number" class="priority" v-model.number="model.priority"
-                                       placeholder="优先级">
-                                <input type="number" class="weight" v-model.number="model.weight" placeholder="权重">
-                                <button class="btn btn-success btn-sm" @click="addModel(pIdx, mIdx)">添加</button>
-                                <button class="btn btn-danger btn-sm" @click="removeModel(pIdx, mIdx)">删除</button>
+                            <div class="model-list-header-row">
+                                <label class="model-list-title">模型映射</label>
+                                <span class="model-list-count" v-if="provider.model_mappings && provider.model_mappings.length">
+                                    共 {{ provider.model_mappings.length }} 个模型
+                                </span>
                             </div>
-                            <button class="add-btn" @click="addModel(pIdx)">+ 添加模型</button>
+
+                            <!-- 桌面端表头 -->
+                            <div class="model-table-header" v-if="provider.model_mappings && provider.model_mappings.length > 0">
+                                <span class="col-head col-upstream">上游模型名</span>
+                                <span class="col-head col-alias">别名 (可选)</span>
+                                <span class="col-head col-priority">优先级</span>
+                                <span class="col-head col-weight">权重</span>
+                                <span class="col-head col-timeout">超时时间</span>
+                                <span class="col-head col-actions">操作</span>
+                            </div>
+
+                            <!-- 空模型映射提示 -->
+                            <div v-if="!provider.model_mappings || provider.model_mappings.length === 0" class="model-empty-hint">
+                                暂无模型映射，点击下方按钮添加
+                            </div>
+
+                            <!-- 模型列表项 -->
+                            <div class="model-item" v-for="(model, mIdx) in provider.model_mappings" :key="mIdx">
+                                <!-- 移动端卡片头部 -->
+                                <div class="model-card-header">
+                                    <div class="model-card-badge-wrap">
+                                        <span class="model-badge">#{{ mIdx + 1 }}</span>
+                                        <span class="model-card-name" :title="model.alias || model.upstream">
+                                            {{ model.alias || model.upstream || '新模型' }}
+                                        </span>
+                                    </div>
+                                    <div class="model-card-actions">
+                                        <button type="button" class="btn btn-success btn-xs" @click="addModel(pIdx, mIdx)" title="在下方插入模型">+ 插入</button>
+                                        <button type="button" class="btn btn-danger btn-xs" @click="removeModel(pIdx, mIdx)" title="删除模型">删除</button>
+                                    </div>
+                                </div>
+
+                                <div class="model-field col-upstream">
+                                    <label class="mobile-label">上游模型名</label>
+                                    <input type="text" class="model-input upstream" v-model="model.upstream" placeholder="上游模型名 (如: gpt-4o)">
+                                </div>
+
+                                <div class="model-field col-alias">
+                                    <label class="mobile-label">别名 (可选)</label>
+                                    <input type="text" class="model-input alias" v-model="model.alias" placeholder="别名(可选，如: gpt-4)">
+                                </div>
+
+                                <div class="model-field col-priority">
+                                    <label class="mobile-label">优先级 <span class="label-tip">(越小越优先)</span></label>
+                                    <input type="number" class="model-input priority" v-model.number="model.priority" placeholder="0">
+                                </div>
+
+                                <div class="model-field col-weight">
+                                    <label class="mobile-label">权重</label>
+                                    <input type="number" class="model-input weight" v-model.number="model.weight" placeholder="1">
+                                </div>
+
+                                <div class="model-field col-timeout">
+                                    <label class="mobile-label">超时时间 <span class="label-tip">(秒，0为默认)</span></label>
+                                    <input type="number" class="model-input timeout" v-model.number="model.timeout" placeholder="0 (默认)" min="0">
+                                </div>
+
+                                <!-- 桌面端操作按钮 -->
+                                <div class="model-desktop-actions col-actions">
+                                    <button type="button" class="btn btn-success btn-sm" @click="addModel(pIdx, mIdx)">添加</button>
+                                    <button type="button" class="btn btn-danger btn-sm" @click="removeModel(pIdx, mIdx)">删除</button>
+                                </div>
+                            </div>
+
+                            <button type="button" class="add-btn" @click="addModel(pIdx)">+ 添加模型</button>
                         </div>
                     </div>
 
@@ -1140,19 +1613,19 @@
                 <div class="toolbar">
                     <h3>实时日志 <span style="font-size: 12px; color: #999; font-weight: normal;">(每3秒自动刷新)</span>
                     </h3>
-                    <div>
+                    <div class="logs-toolbar-actions">
                         <button class="btn" :class="logsAutoRefresh ? 'btn-danger' : 'btn-success'"
                                 @click="toggleLogsAutoRefresh">
                             {{ logsAutoRefresh ? '停止刷新' : '开始刷新' }}
                         </button>
-                        <button class="btn btn-secondary" style="margin-left: 10px;" @click="fetchLogs">
+                        <button class="btn btn-secondary" @click="fetchLogs">
                             手动刷新
                         </button>
                         <button class="btn" :class="logsDetailEnabled ? 'btn-warning' : 'btn-secondary'"
-                                style="margin-left: 10px;" @click="toggleLogsDetail">
+                                @click="toggleLogsDetail">
                             {{ logsDetailEnabled ? '详情日志:开' : '详情日志:关' }}
                         </button>
-                        <button class="btn btn-danger" style="margin-left: 10px;" @click="clearLogs">
+                        <button class="btn btn-danger" @click="clearLogs">
                             清空日志
                         </button>
                     </div>
@@ -1363,7 +1836,11 @@
                     this.providers = (data.providers || []).map(p => ({
                         ...p,
                         exclude_params_str: (p.exclude_params || []).join(', '),
-                        showApiKey: false
+                        showApiKey: false,
+                        model_mappings: (p.model_mappings || []).map(m => ({
+                            ...m,
+                            timeout: m.timeout || 0
+                        }))
                     }));
                     // 对模型映射进行排序
                     this.sortAllProviderMappings();
@@ -1404,7 +1881,8 @@
                                 upstream: m.upstream,
                                 alias: m.alias || m.upstream,
                                 priority: m.priority || 0,
-                                weight: m.weight || 1
+                                weight: m.weight || 1,
+                                timeout: m.timeout || 0
                             }))
                         };
                     });
@@ -1458,7 +1936,8 @@
                         upstream: m.upstream || '',
                         alias: m.alias || '',
                         priority: m.priority || 0,
-                        weight: m.weight || 1
+                        weight: m.weight || 1,
+                        timeout: m.timeout || 0
                     }))
                 }));
                 return JSON.stringify({
@@ -1497,7 +1976,8 @@
                     upstream: '',
                     alias: '',
                     priority: 0,
-                    weight: 1
+                    weight: 1,
+                    timeout: 0
                 };
                 if (afterIdx !== undefined) {
                     this.providers[pIdx].model_mappings.splice(afterIdx + 1, 0, newModel);

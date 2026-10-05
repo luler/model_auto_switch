@@ -25,6 +25,7 @@ type ModelMapping struct {
 	Upstream    string `json:"upstream" yaml:"upstream" mapstructure:"upstream"`                                 // 上游实际模型名（必填）
 	Priority    int    `json:"priority" yaml:"priority" mapstructure:"priority"`                                 // 优先级（数值越小优先级越高，默认0）
 	Weight      int    `json:"weight" yaml:"weight" mapstructure:"weight"`                                       // 负载均衡权重（默认1）
+	Timeout     int    `json:"timeout" yaml:"timeout" mapstructure:"timeout"`                                    // 单模型超时时间（秒，<=0表示使用供应商配置）
 	MaxFailures *int   `json:"max_failures,omitempty" yaml:"max_failures,omitempty" mapstructure:"max_failures"` // 该模型的连续失败阈值（可选，不填则使用全局配置）
 }
 
@@ -125,6 +126,7 @@ type ProviderModelHealth struct {
 	SuccessRate       float64 `json:"success_rate"`           // 成功率(%)
 	Priority          int     `json:"priority"`               // 优先级
 	Weight            int     `json:"weight"`                 // 权重
+	Timeout           int     `json:"timeout"`                // 超时时间（秒）
 }
 
 // ProviderStats 供应商统计信息
@@ -204,6 +206,9 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 			if cfg.ModelMappings[i].Weight <= 0 {
 				cfg.ModelMappings[i].Weight = 1
 			}
+			if cfg.ModelMappings[i].Timeout < 0 {
+				cfg.ModelMappings[i].Timeout = 0
+			}
 		}
 
 		// 创建优化的 Transport 配置
@@ -221,7 +226,7 @@ func NewManager(configs []ProviderConfig, mgrConfig ManagerConfig) *Manager {
 		p := &Provider{
 			Config: cfg,
 			httpClient: &http.Client{
-				Timeout:   time.Duration(cfg.Timeout) * time.Second,
+				// 请求超时由每次请求的上下文控制（支持模型级别超时独立配置）
 				Transport: transport,
 			},
 			streamClient: &http.Client{
@@ -283,6 +288,19 @@ func (p *Provider) GetModelMapping(alias string, mappingIdx int) *ModelMapping {
 		return &p.Config.ModelMappings[mappingIdx]
 	}
 	return nil
+}
+
+// GetModelTimeout 获取指定上游模型的有效超时时间
+// 如果模型单独配置了 timeout > 0 则使用模型配置，否则回退到供应商默认超时时间
+func (p *Provider) GetModelTimeout(upstreamModel string) time.Duration {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for _, mm := range p.Config.ModelMappings {
+		if mm.Upstream == upstreamModel && mm.Timeout > 0 {
+			return time.Duration(mm.Timeout) * time.Second
+		}
+	}
+	return time.Duration(p.Config.Timeout) * time.Second
 }
 
 // GetProviderModels 获取所有支持指定别名的 ProviderModel 组合（按优先级和权重排序）
@@ -386,6 +404,31 @@ func (pm *ProviderModel) GetCombinedPriority() int {
 // GetCombinedWeight 获取 ProviderModel 的综合权重
 func (pm *ProviderModel) GetCombinedWeight() int {
 	return pm.Provider.Config.Weight * pm.Mapping.Weight
+}
+
+// GetTimeout 获取 ProviderModel 的有效超时时间
+// 如果模型单独配置了 timeout > 0 则使用模型配置，否则回退到供应商超时配置
+func (pm *ProviderModel) GetTimeout() time.Duration {
+	if pm.Mapping.Timeout > 0 {
+		return time.Duration(pm.Mapping.Timeout) * time.Second
+	}
+	return time.Duration(pm.Provider.Config.Timeout) * time.Second
+}
+
+// GetTimeoutSeconds 获取 ProviderModel 的有效超时秒数
+func (pm *ProviderModel) GetTimeoutSeconds() int {
+	if pm.Mapping.Timeout > 0 {
+		return pm.Mapping.Timeout
+	}
+	return pm.Provider.Config.Timeout
+}
+
+// GetTimeout 获取 ModelMapping 的有效超时时间（需传入供应商默认超时秒数）
+func (mm *ModelMapping) GetTimeout(providerTimeout int) time.Duration {
+	if mm.Timeout > 0 {
+		return time.Duration(mm.Timeout) * time.Second
+	}
+	return time.Duration(providerTimeout) * time.Second
 }
 
 // SelectProviderModel 从同优先级组中按权重选择一个（用于负载均衡）
@@ -874,7 +917,7 @@ func isImageFailurePath(path string) bool {
 }
 
 func (m *Manager) tryRecoverImageModel(p *Provider, upstreamModel string) {
-	testCtx, testCancel := context.WithTimeout(context.Background(), time.Duration(p.Config.Timeout)*time.Second)
+	testCtx, testCancel := context.WithTimeout(context.Background(), p.GetModelTimeout(upstreamModel))
 	defer testCancel()
 
 	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","prompt":"a small cat","n":1,"size":"1024x1024"}`, upstreamModel))
@@ -920,7 +963,7 @@ func (m *Manager) tryRecoverImageModel(p *Provider, upstreamModel string) {
 }
 
 func (m *Manager) tryRecoverChatModel(p *Provider, upstreamModel string) {
-	testCtx, testCancel := context.WithTimeout(context.Background(), time.Duration(p.Config.Timeout)*time.Second)
+	testCtx, testCancel := context.WithTimeout(context.Background(), p.GetModelTimeout(upstreamModel))
 	defer testCancel()
 
 	testReqBody := []byte(fmt.Sprintf(`{"model":"%s","messages":[{"role":"user","content":"hi"}],"max_tokens":1,"stream":false}`, upstreamModel))
@@ -1141,6 +1184,7 @@ func (m *Manager) GetStats() []ProviderStats {
 				SuccessRate:       modelRate,
 				Priority:          mm.Priority,
 				Weight:            mm.Weight,
+				Timeout:           mm.Timeout,
 			})
 		}
 		p.mu.RUnlock()

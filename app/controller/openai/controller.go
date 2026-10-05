@@ -474,8 +474,8 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 
 		reqBody, reqHeaders := processor(body, headers, pm, aliasModel)
 
-		// 创建带超时的上下文
-		reqCtx, cancel := context.WithTimeout(ctx.Request.Context(), time.Duration(pm.Provider.Config.Timeout)*time.Second)
+		// 创建带超时的上下文（按模型单独配置优先，默认取供应商超时）
+		reqCtx, cancel := context.WithTimeout(ctx.Request.Context(), pm.GetTimeout())
 		resp, err := pm.Provider.ProxyRequest(reqCtx, "POST", upstreamPath, reqBody, reqHeaders)
 
 		if err != nil {
@@ -576,10 +576,11 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		// 首字节超时：仅覆盖"发起到首个有效 chunk"的时间，拿到后解除，后续流式读取不受限。
 		// 用 WithCancel + AfterFunc 而非 WithTimeout：WithTimeout 的 deadline 无法事后解除，会切到正常的长流；
 		// AfterFunc 到期才 cancel，首字节到达后 Stop 即可解除、ctx 保持存活、resp.Body 可继续读取。
-		// 复用 provider.timeout；timeout=0 表示不限（保持原行为）。
+		// 优先使用当前模型单独配置的超时时间，<=0 时回退使用供应商默认超时时间；超时为0表示不限。
 		firstByteCtx, cancelFirstByte := context.WithCancel(ctx.Request.Context())
 		var firstByteTimer *time.Timer
-		if fbTimeout := time.Duration(pm.Provider.Config.Timeout) * time.Second; fbTimeout > 0 {
+		timeoutSec := pm.GetTimeoutSeconds()
+		if fbTimeout := time.Duration(timeoutSec) * time.Second; fbTimeout > 0 {
 			firstByteTimer = time.AfterFunc(fbTimeout, cancelFirstByte)
 		}
 		firstByteTimedOut := func() bool { return firstByteCtx.Err() != nil && ctx.Request.Context().Err() == nil } // 子ctx已取消且父ctx存活=首字节超时（区别于客户端断开）
@@ -595,7 +596,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 			releaseFirstByte()
 			// 首字节超时（非客户端断开）统一成 lastErr，复用下方 failover 逻辑
 			if firstByteTimedOut() {
-				lastErr = fmt.Errorf("first-byte timeout (%ds)", pm.Provider.Config.Timeout)
+				lastErr = fmt.Errorf("first-byte timeout (%ds)", timeoutSec)
 			} else {
 				lastErr = err
 			}
@@ -672,7 +673,7 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		if firstByteTimedOut() {
 			releaseFirstByte()
 			resp.Body.Close()
-			lastErr = fmt.Errorf("first-byte timeout (%ds)", pm.Provider.Config.Timeout)
+			lastErr = fmt.Errorf("first-byte timeout (%ds)", timeoutSec)
 			log_helper.Warning(fmt.Sprintf("❌ [%s][%s] %s #%d %s %s failed: %v", reqID, formatDuration(time.Since(startTime)), aliasModel, i+1, operation, providerName, lastErr))
 			c.maybeLogStreamLines(reqID, startTime, responseLogPrefix(aliasModel, attemptTag, operation, pm), bufferedLines, pm.Mapping.Upstream, aliasModel)
 			c.getManager().RecordFailureWithPath(pm.Provider, aliasModel, pm.Mapping.Upstream, upstreamPath)

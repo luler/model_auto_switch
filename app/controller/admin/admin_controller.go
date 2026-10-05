@@ -382,6 +382,9 @@ func validateSaveConfigRequest(req *SaveConfigRequest) error {
 			if mapping.Weight < 1 {
 				return fmt.Errorf("%s 的第 %d 行模型映射：权重必须大于等于 1", providerLabel, mIdx+1)
 			}
+			if mapping.Timeout < 0 {
+				return fmt.Errorf("%s 的第 %d 行模型映射：超时时间不能小于 0", providerLabel, mIdx+1)
+			}
 		}
 	}
 
