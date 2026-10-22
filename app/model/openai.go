@@ -43,12 +43,14 @@ type ChatCompletionRequest struct {
 
 // ChatMessage 聊天消息
 type ChatMessage struct {
-	Role       string      `json:"role" binding:"required"`
-	Content    interface{} `json:"content"` // 可以是 string 或 []ContentPart
-	Name       string      `json:"name,omitempty"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
-	Refusal    string      `json:"refusal,omitempty"`
+	Role             string      `json:"role" binding:"required"`
+	Content          interface{} `json:"content"` // 可以是 string 或 []ContentPart
+	ReasoningContent string      `json:"reasoning_content,omitempty"`
+	Reasoning        string      `json:"reasoning,omitempty"`
+	Name             string      `json:"name,omitempty"`
+	ToolCalls        []ToolCall  `json:"tool_calls,omitempty"`
+	ToolCallID       string      `json:"tool_call_id,omitempty"`
+	Refusal          string      `json:"refusal,omitempty"`
 }
 
 // ContentPart 多模态内容部分

@@ -169,13 +169,10 @@ func assembleStreamLinesJSON(lines [][]byte) []byte {
 	return assembleStreamFinalJSON(chunks)
 }
 
-func replaceModelInStreamLines(lines [][]byte, upstreamModel, aliasModel string) [][]byte {
-	if upstreamModel == aliasModel {
-		return lines
-	}
+func processStreamLines(lines [][]byte, upstreamModel, aliasModel string) [][]byte {
 	replaced := make([][]byte, 0, len(lines))
 	for _, line := range lines {
-		replaced = append(replaced, replaceModelInStreamLine(line, upstreamModel, aliasModel))
+		replaced = append(replaced, processStreamLine(line, upstreamModel, aliasModel))
 	}
 	return replaced
 }
@@ -184,7 +181,7 @@ func (c *Controller) maybeLogStreamLines(reqID string, startTime time.Time, pref
 	if !c.configGetter.IsDetailLogEnabled() {
 		return
 	}
-	body := assembleStreamLinesJSON(replaceModelInStreamLines(lines, upstreamModel, aliasModel))
+	body := assembleStreamLinesJSON(processStreamLines(lines, upstreamModel, aliasModel))
 	c.maybeLogBody("📤", reqID, startTime, prefix, body)
 }
 
@@ -516,8 +513,8 @@ func (c *Controller) handleProxyRequest(ctx *gin.Context, providerModels []upstr
 			continue
 		}
 
-		// 成功响应 - 替换响应中的模型名为别名
-		respBody = replaceModelInResponse(respBody, pm.Mapping.Upstream, aliasModel)
+		// 成功响应 - 替换响应中的模型名为别名并标准化思考字段
+		respBody = processResponseBody(respBody, pm.Mapping.Upstream, aliasModel)
 		c.getManager().RecordSuccess(pm.Provider, aliasModel, pm.Mapping.Upstream)
 		ctx.Data(resp.StatusCode, "application/json", respBody)
 		// 响应已写入客户端后再输出日志，耗时为端到端总耗时
@@ -887,7 +884,7 @@ func replaceModelInResponse(body []byte, upstreamModel, aliasModel string) []byt
 	if upstreamModel == aliasModel {
 		return body
 	}
-	return []byte(strings.ReplaceAll(string(body), `"model":"`+upstreamModel+`"`, `"model":"`+aliasModel+`"`))
+	return bytes.ReplaceAll(body, []byte(`"model":"`+upstreamModel+`"`), []byte(`"model":"`+aliasModel+`"`))
 }
 
 // replaceModelInStreamLine 替换流式响应行中的模型名
@@ -895,7 +892,39 @@ func replaceModelInStreamLine(line []byte, upstreamModel, aliasModel string) []b
 	if upstreamModel == aliasModel {
 		return line
 	}
-	return []byte(strings.ReplaceAll(string(line), `"model":"`+upstreamModel+`"`, `"model":"`+aliasModel+`"`))
+	return bytes.ReplaceAll(line, []byte(`"model":"`+upstreamModel+`"`), []byte(`"model":"`+aliasModel+`"`))
+}
+
+// standardizeReasoning 将非标准的思考字段（如 Ollama 的 reasoning 或某些实现的 reason）转换为标准的 reasoning_content
+func standardizeReasoning(body []byte) []byte {
+	if bytes.Contains(body, []byte(`"reasoning":`)) {
+		body = bytes.ReplaceAll(body, []byte(`"reasoning":`), []byte(`"reasoning_content":`))
+	}
+	if bytes.Contains(body, []byte(`"reasoning" :`)) {
+		body = bytes.ReplaceAll(body, []byte(`"reasoning" :`), []byte(`"reasoning_content" :`))
+	}
+	// 注意："finish_reason" 前缀为 finish_，其键开头是下划线而非引号，因此不会被 `"reason":` 误替换
+	if bytes.Contains(body, []byte(`"reason":`)) {
+		body = bytes.ReplaceAll(body, []byte(`"reason":`), []byte(`"reasoning_content":`))
+	}
+	if bytes.Contains(body, []byte(`"reason" :`)) {
+		body = bytes.ReplaceAll(body, []byte(`"reason" :`), []byte(`"reasoning_content" :`))
+	}
+	return body
+}
+
+// processResponseBody 处理非流式响应体：替换模型名为别名，并标准化思考字段
+func processResponseBody(body []byte, upstreamModel, aliasModel string) []byte {
+	body = replaceModelInResponse(body, upstreamModel, aliasModel)
+	body = standardizeReasoning(body)
+	return body
+}
+
+// processStreamLine 处理流式响应行：替换模型名为别名，并标准化思考字段
+func processStreamLine(line []byte, upstreamModel, aliasModel string) []byte {
+	line = replaceModelInStreamLine(line, upstreamModel, aliasModel)
+	line = standardizeReasoning(line)
+	return line
 }
 
 // streamResponse 流式传输响应
@@ -920,8 +949,8 @@ func (c *Controller) streamResponse(ctx *gin.Context, resp *http.Response, upstr
 			break
 		}
 
-		// 替换模型名
-		line = replaceModelInStreamLine(line, upstreamModel, aliasModel)
+		// 替换模型名并标准化思考字段
+		line = processStreamLine(line, upstreamModel, aliasModel)
 
 		// 写入响应
 		if _, writeErr := ctx.Writer.Write(line); writeErr != nil {
@@ -1029,19 +1058,41 @@ func detectStreamError(line []byte) error {
 }
 
 // hasNonEmptyStreamContent 检测流数据chunk是否包含非空的实际内容
-// 返回 true：content/reasoning_content 非空
+// 返回 true：content/reasoning_content/reasoning/reason 非空
 // 返回 false：只有 role（首条角色声明）、content 为空字符串、或无内容字段
 func hasNonEmptyStreamContent(line []byte) bool {
 	// 检查 "content" 字段：非空才有效（空字符串 "" 紧跟 "，非空首字符不可能是 "）
 	if contentIdx := bytes.Index(line, []byte(`"content":"`)); contentIdx != -1 {
 		contentStart := contentIdx + len(`"content":"`)
-		return contentStart < len(line) && line[contentStart] != '"'
+		if contentStart < len(line) && line[contentStart] != '"' {
+			return true
+		}
 	}
 
 	// 检查 "reasoning_content" 字段：非空才有效
 	if reasoningIdx := bytes.Index(line, []byte(`"reasoning_content":"`)); reasoningIdx != -1 {
 		reasoningStart := reasoningIdx + len(`"reasoning_content":"`)
-		return reasoningStart < len(line) && line[reasoningStart] != '"'
+		if reasoningStart < len(line) && line[reasoningStart] != '"' {
+			return true
+		}
+	}
+
+	// 检查 "reasoning" 字段（如 Ollama 等上游）：非空才有效
+	if reasoningIdx := bytes.Index(line, []byte(`"reasoning":"`)); reasoningIdx != -1 {
+		reasoningStart := reasoningIdx + len(`"reasoning":"`)
+		if reasoningStart < len(line) && line[reasoningStart] != '"' {
+			return true
+		}
+	}
+
+	// 检查 "reason" 字段：非空才有效（确保前面不是下划线，避免误判 finish_reason）
+	if reasonIdx := bytes.Index(line, []byte(`"reason":"`)); reasonIdx != -1 {
+		if reasonIdx == 0 || line[reasonIdx-1] != '_' {
+			reasonStart := reasonIdx + len(`"reason":"`)
+			if reasonStart < len(line) && line[reasonStart] != '"' {
+				return true
+			}
+		}
 	}
 
 	return false
@@ -1075,8 +1126,8 @@ func (c *Controller) streamResponseWithBufferedLines(ctx *gin.Context, resp *htt
 
 	// 先写入已缓冲的行
 	for _, line := range bufferedLines {
-		// 替换模型名
-		line = replaceModelInStreamLine(line, upstreamModel, aliasModel)
+		// 替换模型名并标准化思考字段
+		line = processStreamLine(line, upstreamModel, aliasModel)
 		collect(line)
 		if _, writeErr := ctx.Writer.Write(line); writeErr != nil {
 			return assembleStreamFinalJSON(collected)
@@ -1096,8 +1147,8 @@ func (c *Controller) streamResponseWithBufferedLines(ctx *gin.Context, resp *htt
 			break
 		}
 
-		// 替换模型名
-		line = replaceModelInStreamLine(line, upstreamModel, aliasModel)
+		// 替换模型名并标准化思考字段
+		line = processStreamLine(line, upstreamModel, aliasModel)
 		collect(line)
 
 		// 写入响应
