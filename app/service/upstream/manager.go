@@ -814,24 +814,6 @@ func (m *Manager) checkAndRecover() {
 	providers := m.providers
 	m.mu.RUnlock()
 
-	// 统计不健康的模型
-	var unhealthyModels []string
-	for _, p := range providers {
-		p.mu.RLock()
-		for upstream, health := range p.modelHealths {
-			if !health.Healthy.Load() {
-				unhealthyModels = append(unhealthyModels, fmt.Sprintf("%s/%s", p.Config.Name, upstream))
-			}
-		}
-		p.mu.RUnlock()
-	}
-
-	if len(unhealthyModels) == 0 {
-		return
-	}
-
-	log_helper.Info(fmt.Sprintf("🩺 Health check: %d unhealthy models: %v", len(unhealthyModels), unhealthyModels))
-
 	for _, p := range providers {
 		p.mu.RLock()
 		healths := p.modelHealths
