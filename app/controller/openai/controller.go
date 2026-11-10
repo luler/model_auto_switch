@@ -627,20 +627,37 @@ func (c *Controller) handleProxyStreamRequest(ctx *gin.Context, providerModels [
 		hasValidContent := false
 		hasDone := false
 
-		// 最多预读取x行进行错误检测，检测成功会提前退出，不是每次都循环x次
-		for j := 0; j < 5; j++ {
+		// 最多预读取x个数据行进行错误检测，检测成功会提前退出，不是每次都循环x次
+		// 空行只是 SSE 事件分隔符，不计入预算（否则 include_usage 场景下空行会耗尽预算、
+		// 读不到 [DONE]，空流检测被跳过）；另设总读取上限兜底
+		for j, reads := 0, 0; j < 5 && reads < 32; reads++ {
 			line, err := reader.ReadBytes('\n')
 			if err != nil {
+				// 预读期间读取失败（未发 [DONE] 就 EOF/断流）且客户端仍在线，视为流已结束，
+				// 让下方空流检测生效；客户端主动断开则不算，避免误记上游失败
+				if ctx.Request.Context().Err() == nil {
+					hasDone = true
+				}
 				// 首字节超时（ctx 被 cancel）会在这里表现为读取错误，跳出后由下方统一判定
 				if err == io.EOF && len(line) > 0 {
 					bufferedLines = append(bufferedLines, line)
 					if detectErr := detectStreamError(line); detectErr != nil {
 						streamErr = detectErr
 					}
+					// 末行带内容（无换行结尾）也算有效，避免正常单行响应被误判为空流
+					if hasNonEmptyStreamContent(line) {
+						hasValidContent = true
+					}
 				}
 				break
 			}
 			bufferedLines = append(bufferedLines, line)
+
+			// 空行不占用预读预算
+			if len(bytes.TrimSpace(line)) == 0 {
+				continue
+			}
+			j++
 
 			// 检测错误
 			if detectErr := detectStreamError(line); detectErr != nil {
@@ -1083,6 +1100,11 @@ func hasNonEmptyStreamContent(line []byte) bool {
 		if reasoningStart < len(line) && line[reasoningStart] != '"' {
 			return true
 		}
+	}
+
+	// 纯工具调用流也是有效内容，否则工具调用流会被当成空流而误触 failover
+	if bytes.Contains(line, []byte(`"tool_calls":`)) || bytes.Contains(line, []byte(`"function_call":`)) {
+		return true
 	}
 
 	// 检查 "reason" 字段：非空才有效（确保前面不是下划线，避免误判 finish_reason）
